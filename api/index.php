@@ -115,8 +115,15 @@ if ($path === '/auth/register' && $method === 'POST') {
     if ($email !== '' && q_one('SELECT 1 FROM students WHERE email=?', array($email))) jerr('Email đã được dùng.');
     $dob = valid_dob($b['dob'] ?? '');
     $gender = valid_gender($b['gender'] ?? '');
-    db()->prepare('INSERT INTO students (name, class_name, dob, gender, phone, email, password_hash) VALUES (?,?,?,?,?,?,?)')
-        ->execute(array($name, $class, $dob, $gender, $phone === '' ? null : $phone, $email === '' ? null : $email, password_hash($pw, PASSWORD_DEFAULT)));
+    $role = 'student';
+    $tc = trim((string)($b['teacher_code'] ?? ''));
+    if ($tc !== '') {
+        $expect = envv('TEACHER_CODE', '');
+        if ($expect === '' || !hash_equals($expect, $tc)) jerr('Mã giáo viên không đúng.');
+        $role = 'teacher';
+    }
+    db()->prepare('INSERT INTO students (name, class_name, dob, gender, phone, email, password_hash, role) VALUES (?,?,?,?,?,?,?,?)')
+        ->execute(array($name, $class, $dob, $gender, $phone === '' ? null : $phone, $email === '' ? null : $email, password_hash($pw, PASSWORD_DEFAULT), $role));
     $sid = (int)db()->lastInsertId();
     $tok = new_session($sid);
     j(array('token' => $tok, 'student' => public_student(q_one('SELECT * FROM students WHERE id=?', array($sid)))));
@@ -192,6 +199,7 @@ if ($path === '/topics') {
         j(q_all('SELECT * FROM topics ORDER BY name'));
     }
     if ($method === 'POST') {
+        require_teacher();
         $b = body();
         $name = trim($b['name'] ?? '');
         if ($name === '') jerr('Thiếu tên chuyên đề');
@@ -222,6 +230,7 @@ if ($method === 'GET' && $path === '/questions') {
 
 // ---------------- QUESTION CREATE ----------------
 if ($method === 'POST' && $path === '/questions') {
+    require_teacher();
     $b = body();
     if (empty($b['subject_id']) || trim($b['content'] ?? '') === '') jerr('Thiếu môn hoặc nội dung');
     if (!q_one('SELECT 1 FROM subjects WHERE id=?', array($b['subject_id']))) jerr('Môn không tồn tại');
@@ -238,6 +247,7 @@ if ($method === 'POST' && $path === '/questions') {
 
 // ---------------- QUESTIONS BULK ----------------
 if ($method === 'POST' && $path === '/questions/bulk') {
+    require_teacher();
     $b = body();
     $n = 0;
     $st = db()->prepare('INSERT INTO questions (subject_id, topic_id, grade, difficulty, qtype, content, options, correct_answer, explanation, score, source, image_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
@@ -260,6 +270,7 @@ if ($method === 'POST' && $path === '/questions/bulk') {
 if (preg_match('#^/questions/(\d+)$#', $path, $m)) {
     $qid = (int)$m[1];
     if ($method === 'PUT') {
+        require_teacher();
         $b = body();
         if (!q_one('SELECT 1 FROM questions WHERE id=?', array($qid))) jerr('Không tìm thấy câu hỏi', 404);
         db()->prepare('UPDATE questions SET subject_id=?, topic_id=?, grade=?, difficulty=?, qtype=?, content=?, options=?, correct_answer=?, explanation=?, score=?, image_url=? WHERE id=?')
@@ -273,6 +284,7 @@ if (preg_match('#^/questions/(\d+)$#', $path, $m)) {
         j(array('ok' => true));
     }
     if ($method === 'DELETE') {
+        require_teacher();
         db()->prepare('DELETE FROM questions WHERE id=?')->execute(array($qid));
         j(array('ok' => true));
     }
@@ -339,11 +351,13 @@ if ($method === 'POST' && preg_match('#^/exams/(\d+)/submit$#', $path, $m)) {
     }
     $acc = $total ? $correct / $total : 0;
     $flog = is_array($b['focus_log'] ?? null) ? array_slice($b['focus_log'], 0, 200) : array();
-    db()->prepare('INSERT INTO attempts (exam_id, mode, correct, total, accuracy, detail, student_name, focus_exits, focus_log) VALUES (?,?,?,?,?,?,?,?,?)')
+    $sess = optional_session();
+    $sid = $sess ? (int)$sess['id'] : null;
+    db()->prepare('INSERT INTO attempts (exam_id, mode, correct, total, accuracy, detail, student_name, student_id, focus_exits, focus_log) VALUES (?,?,?,?,?,?,?,?,?,?)')
         ->execute(array(
             $examId, $mode, $correct, $total, $acc,
             json_encode($details, JSON_UNESCAPED_UNICODE),
-            mb_substr(trim($b['student_name'] ?? ''), 0, 100),
+            mb_substr(trim($b['student_name'] ?? ''), 0, 100), $sid,
             max(0, (int)($b['focus_exits'] ?? 0)),
             json_encode($flog, JSON_UNESCAPED_UNICODE),
         ));
@@ -352,17 +366,48 @@ if ($method === 'POST' && preg_match('#^/exams/(\d+)/submit$#', $path, $m)) {
 
 // ---------------- ATTEMPTS ----------------
 if ($method === 'GET' && $path === '/attempts') {
+    $me = optional_session();
+    $isTeacher = $me && ($me['role'] ?? 'student') === 'teacher';
+    if (!$me) j(array());
     $sql = 'SELECT * FROM attempts WHERE 1=1';
     $p = array();
-    if (!empty($_GET['student_name'])) { $sql .= ' AND student_name=?'; $p[] = $_GET['student_name']; }
+    if (!$isTeacher) {
+        $sql .= ' AND student_id=?'; $p[] = (int)$me['id'];
+    } elseif (!empty($_GET['student_name'])) { $sql .= ' AND student_name=?'; $p[] = $_GET['student_name']; }
     if (!empty($_GET['mode'])) { $sql .= ' AND mode=?'; $p[] = $_GET['mode']; }
     $sql .= ' ORDER BY id DESC LIMIT 200';
     j(array_map('row_to_attempt', q_all($sql, $p)));
 }
 
+// ---------------- LEADERBOARD ----------------
+// Chỉ lượt thi của tài khoản đăng nhập. Xếp theo % cao nhất → trung bình → số lượt.
+if ($method === 'GET' && $path === '/stats/leaderboard') {
+    $mode = $_GET['mode'] ?? 'exam';
+    $team = trim($_GET['team'] ?? '');
+    $limit = max(1, min((int)($_GET['limit'] ?? 50), 100));
+    $sql = "SELECT st.id, st.name, st.class_name, st.team, COUNT(a.id) n, MAX(a.accuracy) best, AVG(a.accuracy) avg, MAX(a.created_at) last_at FROM attempts a JOIN students st ON st.id=a.student_id WHERE a.student_id IS NOT NULL AND a.total > 0 AND COALESCE(st.role,'student') <> 'teacher'";
+    $p = array();
+    if ($mode === 'exam' || $mode === 'practice') { $sql .= ' AND a.mode=?'; $p[] = $mode; }
+    if ($team !== '') { $sql .= ' AND st.team=?'; $p[] = $team; }
+    $sql .= ' GROUP BY st.id ORDER BY best DESC, avg DESC, n DESC LIMIT ' . $limit;
+    $out = array(); $rank = 0;
+    foreach (q_all($sql, $p) as $r) {
+        $rank++;
+        $out[] = array(
+            'rank' => $rank, 'student_id' => (int)$r['id'], 'name' => $r['name'],
+            'class_name' => $r['class_name'], 'team' => $r['team'], 'attempts' => (int)$r['n'],
+            'best' => round((float)$r['best'], 4), 'avg' => round((float)$r['avg'], 4), 'last_at' => $r['last_at'],
+        );
+    }
+    j(array('mode' => $mode, 'board' => $out));
+}
+
 // ---------------- STATS ----------------
 if ($method === 'GET' && $path === '/stats/overview') {
+    $me = optional_session();
+    $isTeacher = $me && ($me['role'] ?? 'student') === 'teacher';
     $filter = $_GET['student_name'] ?? '';
+    if ($me && !$isTeacher) $filter = $me['name']; // học sinh chỉ xem số của mình
     $totalQ = (int)q_one('SELECT COUNT(*) c FROM questions')['c'];
     if ($filter !== '') {
         $rows = q_all('SELECT correct, total FROM attempts WHERE student_name=?', array($filter));
@@ -447,6 +492,7 @@ if ($path === '/students') {
         j(array_map('public_student', q_all($sql, $p)));
     }
     if ($method === 'POST') {
+        require_teacher();
         $b = body();
         if (trim($b['name'] ?? '') === '') jerr('Thiếu tên học sinh');
         db()->prepare('INSERT INTO students (name, class_name, team, note) VALUES (?,?,?,?)')
@@ -461,6 +507,7 @@ if ($path === '/students') {
 if (preg_match('#^/students/(\d+)$#', $path, $m)) {
     $sid = (int)$m[1];
     if ($method === 'PUT') {
+        require_teacher();
         $b = body();
         if (!q_one('SELECT 1 FROM students WHERE id=?', array($sid))) jerr('Không tìm thấy học sinh', 404);
         db()->prepare('UPDATE students SET name=?, class_name=?, team=?, note=? WHERE id=?')
@@ -471,14 +518,16 @@ if (preg_match('#^/students/(\d+)$#', $path, $m)) {
         j(array('ok' => true));
     }
     if ($method === 'DELETE') {
+        require_teacher();
         db()->prepare('DELETE FROM students WHERE id=?')->execute(array($sid));
         j(array('ok' => true));
     }
 }
 
-// Giáo viên đặt lại mật khẩu cho học sinh (quên mật khẩu) — cần X-Api-Token.
+// Giáo viên đặt lại mật khẩu cho học sinh (quên mật khẩu) — cần tài khoản giáo viên.
 if (preg_match('#^/students/(\d+)/reset-password$#', $path, $m)) {
     if ($method !== 'PUT') jerr('Không hỗ trợ.', 405);
+    require_teacher();
     $sid = (int)$m[1];
     if (!q_one('SELECT 1 FROM students WHERE id=?', array($sid))) jerr('Không tìm thấy học sinh', 404);
     $b = body();
@@ -491,6 +540,7 @@ if (preg_match('#^/students/(\d+)/reset-password$#', $path, $m)) {
 
 // ---------------- UPLOAD ẢNH ----------------
 if ($method === 'POST' && $path === '/uploads') {
+    require_teacher();
     if (empty($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) jerr('Chưa nhận được file ảnh.');
     $f = $_FILES['file'];
     $maxBytes = MAX_UPLOAD_MB * 1024 * 1024;

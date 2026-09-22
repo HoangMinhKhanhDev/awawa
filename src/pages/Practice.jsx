@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Play } from 'lucide-react'
 import { api, getSession } from '../api.js'
 
 export default function Practice() {
   const [subjects, setSubjects] = useState([])
   const [topics, setTopics] = useState([])
+  const [weak, setWeak] = useState([])
   const [cfg, setCfg] = useState({ subject_id: '', topic_id: '', grade: '', difficulty: '', limit: 10 })
   const [qs, setQs] = useState([])
   const [answers, setAnswers] = useState({})
@@ -13,6 +16,16 @@ export default function Practice() {
 
   useEffect(() => { api.subjects().then((s) => { setSubjects(s); if (s[0]) setCfg((c) => ({ ...c, subject_id: c.subject_id || s[0].id })) }).catch(() => {}) }, [])
   useEffect(() => { if (cfg.subject_id) api.topics(cfg.subject_id).then(setTopics).catch(() => {}) }, [cfg.subject_id])
+  useEffect(() => { api.stats().then((s) => setWeak(s?.weak_topics || [])).catch(() => {}) }, [])
+  const me = getSession().student
+
+  const pickWeak = (name) => {
+    const t = topics.find((x) => x.name === name)
+    if (t) {
+      setCfg((c) => ({ ...c, topic_id: t.id }))
+      document.getElementById('luyen-filter')?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }
 
   const start = async () => {
     const rows = await api.questions({ subject_id: cfg.subject_id, topic_id: cfg.topic_id, grade: cfg.grade, difficulty: cfg.difficulty, limit: cfg.limit || 10 })
@@ -52,7 +65,24 @@ export default function Practice() {
 
   return (
     <div className="grid">
-      <div className="card">
+      <div className="hero">
+        <h1>Hôm nay ôn gì{me ? `, ${me.name.split(' ').slice(-1)}` : ''}?</h1>
+        <p>Luyện đúng chuyên đề đang yếu — mỗi bộ 10–15 câu, xem lời giải ngay sau khi nộp.</p>
+        {weak.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            {weak.slice(0, 4).map((t) => (
+              <button key={t.topic} className="chip" onClick={() => pickWeak(t.topic)}>
+                {t.topic} • {Math.round((t.accuracy || 0) * 100)}%
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="hero-cta">
+          <button className="btn hero-go" onClick={() => document.getElementById('luyen-filter')?.scrollIntoView({ behavior: 'smooth' })}><Play className="icn sm" />Tạo bộ luyện</button>
+          <Link className="btn hero-ghost" to="/exam">Thi thử bấm giờ</Link>
+        </div>
+      </div>
+      <div className="card" id="luyen-filter">
         <h1 style={{ marginTop: 0 }}>Luyện theo chuyên đề</h1>
         <div className="grid" style={{ gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: 8 }}>
           <select className="select" value={cfg.subject_id} onChange={(e) => setCfg({ ...cfg, subject_id: e.target.value, topic_id: '' })}>{subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>

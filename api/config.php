@@ -127,3 +127,21 @@ function session_student() {
     unset($s['expires_at']);
     return public_student($s);
 }
+
+// Session tùy chọn: có thì trả học sinh, không thì null (không báo lỗi).
+function optional_session() {
+    $tok = $_SERVER['HTTP_X_SESSION_TOKEN'] ?? '';
+    if ($tok === '' || !preg_match('/^[a-f0-9]{64}$/', $tok)) return null;
+    $h = hash('sha256', $tok);
+    $s = q_one('SELECT s.expires_at, st.* FROM sessions s JOIN students st ON st.id=s.student_id WHERE s.token_hash=?', array($h));
+    if (!$s || strtotime($s['expires_at']) < time()) return null;
+    unset($s['expires_at']);
+    return public_student($s);
+}
+
+// Chặn khu giáo viên: chỉ role=teacher mới qua.
+function require_teacher() {
+    $me = optional_session();
+    if (!$me || ($me['role'] ?? 'student') !== 'teacher') jerr('Khu vực giáo viên.', 403);
+    return $me;
+}

@@ -76,6 +76,7 @@ export function setSession(token, student) {
   } else {
     localStorage.removeItem('student')
   }
+  try { window.dispatchEvent(new Event('session-changed')) } catch {}
 }
 
 function sessionHeaders() {
@@ -209,6 +210,12 @@ const legacyApi = {
   createStudent: (payload) => req('/api/students', { method: 'POST', body: JSON.stringify(payload) }),
   updateStudent: (id, payload) => req(`/api/students/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteStudent: (id) => req(`/api/students/${id}`, { method: 'DELETE' }),
+  leaderboard: (params = {}) => {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null) q.append(k, v) })
+    const s = q.toString()
+    return req(`/api/stats/leaderboard${s ? `?${s}` : ''}`)
+  },
   ...authMethods((p, o) => req('/api' + p, o)),
   previewImportText: (text) => req('/api/import/preview-text', { method: 'POST', body: JSON.stringify({ text }) }),
   uploadImport: async (file) => {
@@ -272,6 +279,7 @@ const phpApi = {
   createStudent: (payload) => preq('/students', { method: 'POST', body: JSON.stringify(payload) }),
   updateStudent: (id, payload) => preq(`/students/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteStudent: (id) => preq(`/students/${id}`, { method: 'DELETE' }),
+  leaderboard: (params = {}) => preq(`/stats/leaderboard${pquery(params)}`),
   ...authMethods(preq),
   previewImportText: async (text) => ({ text, drafts: parseTextToDrafts(text) }),
   uploadImport: async (file) => {

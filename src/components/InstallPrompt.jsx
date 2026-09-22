@@ -21,7 +21,7 @@ export default function InstallPrompt() {
   useEffect(() => {
     if (isStandalone()) return
     // Luôn gắn listener (kể cả khi đang trong thời gian "để sau"),
-    // để nút 📲 Cài app bấm lúc nào cũng mở được bảng.
+    // để nút Cài app bấm lúc nào cũng mở được bảng.
     const last = Number(localStorage.getItem(ASK_KEY) || 0)
     const auto = Date.now() - last >= REMIND_DAYS * 24 * 3600 * 1000
     const t = auto ? setTimeout(() => setShow(true), 1500) : null
@@ -54,7 +54,7 @@ export default function InstallPrompt() {
   }
 
   const steps = inAppBrowser()
-    ? ['Bạn đang mở web BÊN TRONG Zalo/Facebook nên không cài được app.', 'Bấm menu ⋮ (góc trên) → "Mở bằng trình duyệt" / "Mở trong Chrome".', 'Trong Chrome, bấm nút 📲 Cài app để cài.']
+    ? ['Bạn đang mở web BÊN TRONG Zalo/Facebook nên không cài được app.', 'Bấm menu ⋮ (góc trên) → "Mở bằng trình duyệt" / "Mở trong Chrome".', 'Trong Chrome, bấm nút "Cài app" để cài.']
     : isIOS()
       ? ['Bấm nút Chia sẻ ở thanh Safari.', 'Chọn "Thêm vào MH chính".', 'Mở app bằng biểu tượng ngoài màn hình.']
       : isAndroid()

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { CircleUserRound } from 'lucide-react'
 import { api, getSession, setSession } from '../api.js'
 
 const GENDERS = ['', 'Nam', 'Nữ', 'Khác']
@@ -14,7 +15,7 @@ export default function Profile() {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [login, setLogin] = useState({ login: '', password: '' })
-  const [reg, setReg] = useState({ name: '', class_name: '', dob: '', gender: '', phone: '', email: '', password: '', password2: '' })
+  const [reg, setReg] = useState({ name: '', class_name: '', dob: '', gender: '', phone: '', email: '', password: '', password2: '', teacher_code: '' })
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({})
   const [pw, setPw] = useState({ old_password: '', new_password: '', new_password2: '' })
@@ -61,6 +62,7 @@ export default function Profile() {
         name: reg.name.trim(), class_name: reg.class_name.trim(),
         dob: reg.dob || '', gender: reg.gender || '',
         phone: reg.phone.trim(), email: reg.email.trim(), password: reg.password,
+        teacher_code: reg.teacher_code.trim(),
       })
       setStudent(r.student)
       setMsg('')
@@ -102,7 +104,7 @@ export default function Profile() {
     return (
       <div className="grid">
         <div className="card">
-          <h1 style={{ marginTop: 0 }}>Hồ sơ học sinh 👤</h1>
+          <h1 style={{ marginTop: 0, display: 'flex', gap: 8, alignItems: 'center' }}><CircleUserRound className="icn" />Hồ sơ học sinh</h1>
           <div className="small muted">Đăng nhập để nộp bài đúng tên, xem tiến độ của mình. Chưa có tài khoản? Học sinh <b>tự đăng ký</b> miễn phí — cần <b>số điện thoại hoặc email</b> (1 trong 2) làm tên đăng nhập.</div>
           <div className="row" style={{ marginTop: 10 }}>
             <button className={`btn ${tab === 'login' ? 'primary' : ''}`} onClick={() => { setTab('login'); setMsg('') }}>Đăng nhập</button>
@@ -167,6 +169,8 @@ export default function Profile() {
             <div className="row" style={{ marginTop: 10 }}>
               <button className="btn primary" onClick={doRegister} disabled={busy}>{busy ? 'Đang tạo…' : 'Tạo tài khoản'}</button>
             </div>
+            <label className="lbl" style={{ marginTop: 8 }}>Mã giáo viên (chỉ giáo viên mới có — học sinh bỏ trống)</label>
+            <input className="input" autoComplete="off" value={reg.teacher_code} onChange={(e) => setReg({ ...reg, teacher_code: e.target.value })} />
           </div>
         )}
         {msg && <div className="card"><div className="small" style={{ color: '#b91c1c' }}>{msg}</div></div>}
@@ -180,7 +184,7 @@ export default function Profile() {
     <div className="grid">
       <div className="card">
         <div className="row" style={{ justifyContent: 'space-between' }}>
-          <h1 style={{ margin: 0 }}>Hồ sơ của {student.name} 👤</h1>
+          <h1 style={{ margin: 0, display: 'flex', gap: 8, alignItems: 'center' }}><CircleUserRound className="icn" />Hồ sơ của {student.name}</h1>
           <button className="btn" onClick={doLogout}>Đăng xuất</button>
         </div>
         <div className="small muted" style={{ marginTop: 6 }}>

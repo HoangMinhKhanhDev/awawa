@@ -1,91 +1,102 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../api.js'
+import { Trophy } from 'lucide-react'
+import { api, getSession } from '../api.js'
+
+const TEAMS = ['', 'Nông nghiệp', 'Chăn nuôi', 'Lâm nghiệp – Thủy sản']
 
 export default function Progress() {
   const [stats, setStats] = useState(null)
   const [attempts, setAttempts] = useState([])
-  const [students, setStudents] = useState([])
-  const [filter, setFilter] = useState('')
+  const [board, setBoard] = useState([])
+  const [mode, setMode] = useState('exam')
+  const [team, setTeam] = useState('')
+  const me = getSession().student
 
-  const load = async (name = filter) => {
-    try {
-      const [st, at, studs] = await Promise.all([
-        api.stats(name ? { student_name: name } : {}),
-        api.attempts(name ? { student_name: name } : {}),
-        api.students().catch(() => []),
-      ])
-      setStats(st); setAttempts(at); setStudents(studs || [])
-    } catch {}
-  }
+  useEffect(() => {
+    Promise.all([
+      api.stats().catch(() => null),
+      api.attempts().catch(() => []),
+    ]).then(([st, at]) => { setStats(st); setAttempts(at || []) })
+  }, [])
 
-  useEffect(() => { load('') }, [])
+  useEffect(() => {
+    api.leaderboard({ mode, team: team || undefined }).then((r) => setBoard(r.board || [])).catch(() => setBoard([]))
+  }, [mode, team])
+
+  const myId = me?.id
+  const pct = (x) => `${Math.round((x || 0) * 100)}%`
 
   return (
     <div className="grid">
       <div className="card">
-        <h1 style={{ marginTop: 0 }}>Tiến độ học {filter && <span className="badge"> {filter}</span>}</h1>
-        <div className="row">
-          <input
-            className="input" style={{ flex: 1, minWidth: 180 }} list="student-list"
-            placeholder="Lọc theo học sinh — gõ tên hoặc để trống xem toàn đội…"
-            value={filter} onChange={(e) => setFilter(e.target.value)}
-          />
-          <datalist id="student-list">
-            {students.map((s) => <option key={s.id} value={s.name}>{s.team} • {s.class_name}</option>)}
-          </datalist>
-          <button className="btn primary" onClick={() => load()}>Xem</button>
-          {filter && <button className="btn" onClick={() => { setFilter(''); load('') }}>Xóa lọc</button>}
-          <Link className="btn" to="/team">Quản lý đội</Link>
-        </div>
-        {!stats ? <div className="muted" style={{ marginTop: 8 }}>Đang tải…</div> : (
-          <div className="grid c3" style={{ marginTop: 12 }}>
-            <div><div className="muted small">Lượt làm{filter ? ` của ${filter}` : ''}</div><div className="kpi">{stats.total_attempts}</div></div>
-            <div><div className="muted small">Tỉ lệ đúng</div><div className="kpi">{Math.round((stats.accuracy || 0) * 100)}%</div></div>
-            <div><div className="muted small">Số câu trong ngân hàng</div><div className="kpi">{stats.total_questions}</div></div>
+        <h1 style={{ marginTop: 0 }}>Tiến độ học</h1>
+        {!me && <div className="small muted">Đăng nhập ở tab Tôi để lưu tiến độ và lên bảng xếp hạng. <Link to="/profile">Đăng nhập</Link></div>}
+        {stats && (
+          <div className="kpi-strip" style={{ marginTop: 12 }}>
+            <div className="kpi-cell"><div className="muted small">{me ? 'Lượt làm của bạn' : 'Lượt làm'}</div><div className="kpi">{stats.total_attempts}</div></div>
+            <div className="kpi-cell"><div className="muted small">Tỉ lệ đúng</div><div className="kpi">{pct(stats.accuracy)}</div></div>
+            <div className="kpi-cell"><div className="muted small">Câu trong ngân hàng</div><div className="kpi">{stats.total_questions}</div></div>
           </div>
         )}
       </div>
 
-      {!filter && stats?.by_student?.length > 0 && (
-        <div className="card">
-          <h3 style={{ marginTop: 0 }}>Xếp hạng toàn đội</h3>
-          <table className="tbl">
-            <thead><tr><th>#</th><th>Học sinh</th><th>Lượt</th><th>Kết quả</th><th>Lần cuối</th></tr></thead>
-            <tbody>
-              {stats.by_student.slice(0, 20).map((r, i) => (
-                <tr key={r.student_name}>
-                  <td>{i + 1}</td>
-                  <td><button className="btn" style={{ padding: '2px 8px' }} onClick={() => { setFilter(r.student_name); load(r.student_name) }}><b>{r.student_name}</b></button></td>
-                  <td>{r.attempts}</td>
-                  <td>{r.correct}/{r.total} ({Math.round((r.accuracy || 0) * 100)}%)</td>
-                  <td className="small">{r.last_at ? new Date(r.last_at).toLocaleString('vi-VN') : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="small muted" style={{ marginTop: 6 }}>Bấm tên để xem chi tiết từng em (chuyên đề yếu + lịch sử).</div>
+      <div className="card">
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <h3 style={{ margin: 0, display: 'flex', gap: 8, alignItems: 'center' }}><Trophy className="icn" />Bảng xếp hạng</h3>
+          <div className="row">
+            <div className="subnav">
+              <button className={mode === 'exam' ? 'on' : ''} onClick={() => setMode('exam')}>Thi thử</button>
+              <button className={mode === 'practice' ? 'on' : ''} onClick={() => setMode('practice')}>Luyện tập</button>
+            </div>
+            <select className="select" style={{ width: 'auto' }} value={team} onChange={(e) => setTeam(e.target.value)}>
+              <option value="">Tất cả đội</option>
+              {TEAMS.filter(Boolean).map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
         </div>
-      )}
+        <div className="small muted" style={{ marginTop: 4 }}>Chỉ tính lượt thi của tài khoản đăng nhập • xếp theo % cao nhất.</div>
+        {board.length === 0 ? (
+          <div className="empty" style={{ marginTop: 10 }}>Chưa có ai lên bảng — thi một lượt để giành hạng 1.</div>
+        ) : (
+          <div style={{ marginTop: 6 }}>
+            {board.map((r) => (
+              <div key={r.student_id} className={`board-row${r.student_id === myId ? ' me' : ''}`}>
+                <span className={`rank${r.rank <= 3 ? ` r${r.rank}` : ''}`}>{r.rank}</span>
+                <div>
+                  <b>{r.name}</b>
+                  <div className="small muted">{r.class_name || ''}{r.team ? ` • ${r.team}` : ''} • {r.attempts} lượt</div>
+                </div>
+                <div className="board-score">
+                  <b>{pct(r.best)}</b>
+                  <div className="small muted">TB {pct(r.avg)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="grid c2">
         <div className="card">
-          <h3>Theo chuyên đề{filter ? ` — ${filter}` : ''}</h3>
-          {!stats?.by_topic?.length ? <div className="muted small">Chưa có dữ liệu.</div> :
-            stats.by_topic.map((t) => (
-              <div key={t.topic} style={{ padding: '8px 0', borderBottom: '1px solid #f1f5f9' }}>
-                <div className="row" style={{ justifyContent: 'space-between' }}><span>{t.topic}</span><b>{Math.round(t.accuracy * 100)}%</b></div>
-                <div className="progress" style={{ marginTop: 6 }}><div style={{ width: `${Math.round(t.accuracy * 100)}%` }} /></div>
-                <div className="small muted">{t.done}/{t.total} lượt đúng</div>
+          <h3>Chuyên đề cần ôn lại</h3>
+          {!stats ? <div className="muted small">Đang tải…</div> :
+            (stats.weak_topics || []).length === 0 ? <div className="muted small">Đang tốt — chưa có chuyên đề nào dưới 80%. Cứ duy trì.</div> :
+            (stats.weak_topics || []).map((t) => (
+              <div key={t.topic} style={{ padding: '8px 0', borderBottom: '1px solid var(--line-soft)' }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}><span>{t.topic}</span><span className="badge red">{pct(t.accuracy)} đúng</span></div>
+                <div className="progress" style={{ marginTop: 6 }}><div style={{ width: `${Math.round((t.accuracy || 0) * 100)}%` }} /></div>
               </div>
             ))}
+          <hr className="sep" />
+          <div className="small muted">Chọn 1 chuyên đề yếu → luyện 10–15 câu → xem lời giải → thi thử 45–90 phút.</div>
         </div>
         <div className="card">
-          <h3>Lịch sử làm bài{filter ? ` — ${filter}` : ''}</h3>
-          {attempts.length === 0 ? <div className="muted small">Chưa có lượt nào.</div> :
-            <table className="tbl"><thead><tr><th>Thời gian</th><th>Học sinh</th><th>Chế độ</th><th>Kết quả</th><th>Rời app</th></tr></thead>
+          <h3>Lịch sử làm bài{me ? ' của bạn' : ''}</h3>
+          {attempts.length === 0 ? <div className="muted small">{me ? 'Chưa có lượt nào — vào tab Học làm một bộ.' : 'Đăng nhập để xem lịch sử của bạn.'}</div> :
+            <table className="tbl"><thead><tr><th>Thời gian</th><th>Chế độ</th><th>Kết quả</th></tr></thead>
               <tbody>{attempts.slice(0, 30).map((a) => (
-                <tr key={a.id}><td className="small">{new Date(a.created_at).toLocaleString('vi-VN')}</td><td>{a.student_name || '—'}</td><td>{a.mode === 'exam' ? 'Thi thử' : 'Luyện tập'}</td><td>{a.total ? `${a.correct}/${a.total} (${Math.round((a.accuracy || 0) * 100)}%)` : '—'}</td><td>{a.mode === 'exam' ? (<span className={`badge ${(a.focus_exits || 0) > 0 ? 'red' : 'green'}`}>{a.focus_exits || 0} lần</span>) : '—'}</td></tr>
+                <tr key={a.id}><td className="small">{a.created_at ? new Date(a.created_at).toLocaleString('vi-VN') : '—'}</td><td>{a.mode === 'exam' ? 'Thi thử' : 'Luyện tập'}</td><td>{a.total ? `${a.correct}/${a.total} (${pct(a.accuracy)})` : '—'}</td></tr>
               ))}</tbody></table>}
         </div>
       </div>

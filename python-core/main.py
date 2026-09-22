@@ -5,6 +5,7 @@ Run: python main.py --port 8765 --db-path ./data/app.db
 import argparse
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS students (
   phone TEXT,
   email TEXT,
   password_hash TEXT,
+  role TEXT DEFAULT 'student',
   created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -98,6 +100,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   accuracy REAL DEFAULT 0,
   detail TEXT DEFAULT '[]',
   student_name TEXT DEFAULT '',
+  student_id INTEGER,
   focus_exits INTEGER DEFAULT 0,
   focus_log TEXT DEFAULT '[]',
   created_at TEXT
@@ -107,6 +110,7 @@ CREATE TABLE IF NOT EXISTS attempts (
 # Cá»™t má»›i cho DB Ä‘Ã£ tá»“n táº¡i tá»« báº£n cÅ© (migrate nháº¹, khÃ´ng máº¥t dá»¯ liá»‡u)
 ATTEMPT_MIGRATIONS = [
     ("student_name", "TEXT DEFAULT ''"),
+    ("student_id", "INTEGER"),
     ("focus_exits", "INTEGER DEFAULT 0"),
     ("focus_log", "TEXT DEFAULT '[]'"),
 ]
@@ -121,6 +125,7 @@ STUDENT_MIGRATIONS = [
     ("phone", "TEXT"),
     ("email", "TEXT"),
     ("password_hash", "TEXT"),
+    ("role", "TEXT DEFAULT 'student'"),
 ]
 
 # ---------- DB ----------
@@ -477,6 +482,7 @@ class ExamIn(BaseModel):
 class SubmitIn(BaseModel):
     answers: list = []
     student_name: str = ""
+    student_id: Optional[int] = None
     focus_exits: int = 0
     focus_log: list = []
 
@@ -523,7 +529,8 @@ def topics(subject_id: Optional[str] = None):
 
 
 @app.post("/api/topics")
-def create_topic(payload: TopicIn):
+def create_topic(payload: TopicIn, request: Request):
+    require_teacher(request)
     if not payload.name.strip():
         raise HTTPException(400, "Thiáº¿u tÃªn chuyÃªn Ä‘á»")
     if not db.q1("SELECT 1 FROM subjects WHERE id=?", (payload.subject_id,)):
@@ -550,7 +557,8 @@ def list_students(team: Optional[str] = None, search: Optional[str] = None):
 
 
 @app.post("/api/students")
-def create_student(payload: StudentIn):
+def create_student(payload: StudentIn, request: Request):
+    require_teacher(request)
     if not payload.name.strip():
         raise HTTPException(400, "Thiáº¿u tÃªn há»c sinh")
     now = datetime.now().isoformat(timespec="seconds")
@@ -561,7 +569,8 @@ def create_student(payload: StudentIn):
 
 
 @app.put("/api/students/{sid}")
-def update_student(sid: int, payload: StudentIn):
+def update_student(sid: int, payload: StudentIn, request: Request):
+    require_teacher(request)
     r = db.q1("SELECT * FROM students WHERE id=?", (sid,))
     if not r: raise HTTPException(404, "KhÃ´ng tÃ¬m tháº¥y há»c sinh")
     db.exec("UPDATE students SET name=?, class_name=?, team=?, note=? WHERE id=?",
@@ -571,7 +580,8 @@ def update_student(sid: int, payload: StudentIn):
 
 
 @app.delete("/api/students/{sid}")
-def delete_student(sid: int):
+def delete_student(sid: int, request: Request):
+    require_teacher(request)
     db.exec("DELETE FROM students WHERE id=?", (sid,))
     return {"ok": True}
 
@@ -664,6 +674,32 @@ def current_student(request: Request) -> dict:
     return d
 
 
+def optional_session(request: Request):
+    tok = request.headers.get("x-session-token", "")
+    if not re.fullmatch(r"[a-f0-9]{64}", tok or ""):
+        return None
+    h = hashlib.sha256(tok.encode()).hexdigest()
+    s = db.q1("SELECT s.expires_at, st.* FROM sessions s JOIN students st ON st.id=s.student_id WHERE s.token_hash=?", (h,))
+    if not s:
+        return None
+    try:
+        expired = datetime.fromisoformat(s["expires_at"]) < datetime.now()
+    except Exception:
+        expired = True
+    if expired:
+        return None
+    d = public_student(s)
+    d.pop("expires_at", None)
+    return d
+
+
+def require_teacher(request: Request) -> dict:
+    me = optional_session(request)
+    if not me or (me.get("role") or "student") != "teacher":
+        raise HTTPException(403, "Khu vuc giao vien.")
+    return me
+
+
 class RegisterIn(BaseModel):
     name: str = ""
     class_name: str = ""
@@ -672,6 +708,7 @@ class RegisterIn(BaseModel):
     phone: str = ""
     email: str = ""
     password: str = ""
+    teacher_code: str = ""
 
 
 class LoginIn(BaseModel):
@@ -717,9 +754,16 @@ def auth_register(payload: RegisterIn):
         raise HTTPException(400, "Email da duoc dung.")
     dob = check_dob(payload.dob)
     gender = check_gender(payload.gender or "")
+    role = "student"
+    tc = (payload.teacher_code or "").strip()
+    if tc != "":
+        expect = os.getenv("TEACHER_CODE", "")
+        if expect == "" or not secrets.compare_digest(expect, tc):
+            raise HTTPException(400, "Ma giao vien khong dung.")
+        role = "teacher"
     now = datetime.now().isoformat(timespec="seconds")
-    cur = db.exec("INSERT INTO students (name, class_name, dob, gender, phone, email, password_hash, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                  (name, cls, dob, gender, phone or None, email or None, hash_pw(payload.password), now))
+    cur = db.exec("INSERT INTO students (name, class_name, dob, gender, phone, email, password_hash, role, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                  (name, cls, dob, gender, phone or None, email or None, hash_pw(payload.password), role, now))
     sid = cur.lastrowid
     tok = new_session(sid)
     return {"token": tok, "student": public_student(db.q1("SELECT * FROM students WHERE id=?", (sid,)))}
@@ -790,7 +834,8 @@ def auth_password(payload: PasswordIn, request: Request):
 
 
 @app.put("/api/students/{sid}/reset-password")
-def reset_password(sid: int, payload: ResetIn):
+def reset_password(sid: int, payload: ResetIn, request: Request):
+    require_teacher(request)
     if not db.q1("SELECT 1 FROM students WHERE id=?", (sid,)):
         raise HTTPException(404, "Khong tim thay hoc sinh")
     if len(payload.password or "") < 6:
@@ -818,7 +863,8 @@ def list_questions(subject_id: Optional[str] = None, topic_id: Optional[str] = N
 
 
 @app.post("/api/questions")
-def create_question(payload: QuestionIn):
+def create_question(payload: QuestionIn, request: Request):
+    require_teacher(request)
     if payload.subject_id and not db.q1("SELECT 1 FROM subjects WHERE id=?", (payload.subject_id,)):
         raise HTTPException(400, "MÃ´n khÃ´ng tá»“n táº¡i")
     now = datetime.now().isoformat(timespec="seconds")
@@ -832,7 +878,8 @@ def create_question(payload: QuestionIn):
 
 
 @app.post("/api/questions/bulk")
-def bulk(payload: BulkIn):
+def bulk(payload: BulkIn, request: Request):
+    require_teacher(request)
     now = datetime.now().isoformat(timespec="seconds")
     n = 0
     for it in payload.items or []:
@@ -850,7 +897,8 @@ def bulk(payload: BulkIn):
 
 
 @app.put("/api/questions/{qid}")
-def update_question(qid: int, payload: QuestionIn):
+def update_question(qid: int, payload: QuestionIn, request: Request):
+    require_teacher(request)
     r = db.q1("SELECT * FROM questions WHERE id=?", (qid,))
     if not r: raise HTTPException(404, "KhÃ´ng tÃ¬m tháº¥y cÃ¢u há»i")
     db.exec("UPDATE questions SET subject_id=?, topic_id=?, grade=?, difficulty=?, qtype=?, content=?, options=?, correct_answer=?, explanation=?, score=?, image_url=? WHERE id=?",
@@ -862,7 +910,8 @@ def update_question(qid: int, payload: QuestionIn):
 
 
 @app.delete("/api/questions/{qid}")
-def delete_question(qid: int):
+def delete_question(qid: int, request: Request):
+    require_teacher(request)
     db.exec("DELETE FROM questions WHERE id=?", (qid,))
     return {"ok": True}
 
@@ -889,7 +938,7 @@ def get_exam(eid: int):
 
 
 @app.post("/api/exams/{eid}/submit")
-def submit_exam(eid: int, payload: SubmitIn):
+def submit_exam(eid: int, payload: SubmitIn, request: Request):
     exam = db.q1("SELECT * FROM exams WHERE id=?", (eid,)) if eid and eid < 10**12 else None
     mode = exam["mode"] if exam else "practice"
     correct = 0
@@ -917,18 +966,26 @@ def submit_exam(eid: int, payload: SubmitIn):
     if not isinstance(focus_log, list):
         focus_log = []
     focus_log = focus_log[:200]  # chá»‘ng log quÃ¡ lá»›n
-    cur = db.exec("INSERT INTO attempts (exam_id, mode, correct, total, accuracy, detail, student_name, focus_exits, focus_log, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    sess = optional_session(request)
+    sid = sess["id"] if sess else None
+    cur = db.exec("INSERT INTO attempts (exam_id, mode, correct, total, accuracy, detail, student_name, student_id, focus_exits, focus_log, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                   (eid if exam else None, mode, correct, total, acc, json.dumps(payload.answers or [], ensure_ascii=False),
-                   (payload.student_name or "").strip()[:100], focus_exits, json.dumps(focus_log, ensure_ascii=False), now))
+                   (payload.student_name or "").strip()[:100], sid, focus_exits, json.dumps(focus_log, ensure_ascii=False), now))
     return {"attempt_id": cur.lastrowid, "correct": correct, "total": total, "accuracy": acc,
             "focus_exits": focus_exits}
 
 
 @app.get("/api/attempts")
-def attempts(student_name: Optional[str] = None, mode: Optional[str] = None):
+def attempts(student_name: Optional[str] = None, mode: Optional[str] = None, request: Request = None):
+    me = optional_session(request) if request is not None else None
+    is_teacher = bool(me and (me.get("role") or "student") == "teacher")
+    if not me:
+        return []
     sql = "SELECT * FROM attempts WHERE 1=1"
     params = []
-    if student_name:
+    if not is_teacher:
+        sql += " AND student_id=?"; params.append(me["id"])
+    elif student_name:
         sql += " AND student_name=?"; params.append(student_name)
     if mode:
         sql += " AND mode=?"; params.append(mode)
@@ -936,8 +993,31 @@ def attempts(student_name: Optional[str] = None, mode: Optional[str] = None):
     return [dict(r) for r in db.q(sql, tuple(params))]
 
 
+@app.get("/api/stats/leaderboard")
+def leaderboard(mode: str = "exam", team: Optional[str] = None, limit: int = 50):
+    limit = max(1, min(limit or 50, 100))
+    sql = "SELECT st.id, st.name, st.class_name, st.team, COUNT(a.id) n, MAX(a.accuracy) best, AVG(a.accuracy) avg, MAX(a.created_at) last_at FROM attempts a JOIN students st ON st.id=a.student_id WHERE a.student_id IS NOT NULL AND a.total > 0 AND COALESCE(st.role,'student') <> 'teacher'"
+    params = []
+    if mode == "exam" or mode == "practice":
+        sql += " AND a.mode=?"; params.append(mode)
+    if team:
+        sql += " AND st.team=?"; params.append(team)
+    sql += " GROUP BY st.id ORDER BY best DESC, avg DESC, n DESC LIMIT ?"
+    params.append(limit)
+    out = []
+    for i, r in enumerate(db.q(sql, tuple(params)), 1):
+        out.append({"rank": i, "student_id": r["id"], "name": r["name"],
+                    "class_name": r["class_name"], "team": r["team"], "attempts": r["n"],
+                    "best": round(r["best"] or 0, 4), "avg": round(r["avg"] or 0, 4),
+                    "last_at": r["last_at"]})
+    return {"mode": mode, "board": out}
+
+
 @app.get("/api/stats/overview")
-def stats(student_name: Optional[str] = None):
+def stats(student_name: Optional[str] = None, request: Request = None):
+    me = optional_session(request) if request is not None else None
+    if me and (me.get("role") or "student") != "teacher":
+        student_name = me["name"]
     total_q = db.count("questions")
     if student_name:
         rows_a = db.q("SELECT correct, total FROM attempts WHERE student_name=?", (student_name,))
@@ -994,7 +1074,9 @@ def preview_text(payload: PreviewIn):
 
 
 @app.post("/api/import/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile = File(...), request: Request = None):
+    if request is not None:
+        require_teacher(request)
     data = await file.read()
     if len(data) > 15 * 1024 * 1024:
         raise HTTPException(400, "File quÃ¡ lá»›n (>15MB)")

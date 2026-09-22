@@ -1,15 +1,13 @@
 import { NavLink, Routes, Route } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import Dashboard from './pages/Dashboard.jsx'
-import Bank from './pages/Bank.jsx'
+import { GraduationCap, Timer, TrendingUp, ShieldCheck, CircleUserRound, Sprout, TabletSmartphone } from 'lucide-react'
 import Practice from './pages/Practice.jsx'
 import Exam from './pages/Exam.jsx'
 import Progress from './pages/Progress.jsx'
-import ImportDoc from './pages/ImportDoc.jsx'
-import Team from './pages/Team.jsx'
+import Manage from './pages/Manage.jsx'
 import Profile from './pages/Profile.jsx'
 import InstallPrompt from './components/InstallPrompt.jsx'
-import { getBackendUrl, api, setBackendUrl, isPhpMode } from './api.js'
+import { getBackendUrl, api, setBackendUrl, isPhpMode, getSession } from './api.js'
 
 function useBackend() {
   const [url, setUrl] = useState('...');
@@ -47,30 +45,33 @@ function useBackend() {
 }
 
 const TABS = [
-  { to: '/', label: 'Chính', icon: '🏠' },
-  { to: '/bank', label: 'Câu hỏi', icon: '📚' },
-  { to: '/practice', label: 'Luyện', icon: '✏️' },
-  { to: '/exam', label: 'Thi', icon: '⏱' },
-  { to: '/team', label: 'Đội', icon: '👥' },
-  { to: '/profile', label: 'Hồ sơ', icon: '👤' },
-  { to: '/progress', label: 'Tiến độ', icon: '📈' },
-  { to: '/import', label: 'Nhập đề', icon: '📥' }
+  { to: '/', label: 'Học', long: 'Học theo chuyên đề', icon: GraduationCap, end: true },
+  { to: '/exam', label: 'Thi', long: 'Thi thử bấm giờ', icon: Timer },
+  { to: '/progress', label: 'Tiến độ', long: 'Tiến độ học', icon: TrendingUp },
+  { to: '/manage', label: 'Quản lý', long: 'Quản lý', icon: ShieldCheck, teacher: true },
+  { to: '/profile', label: 'Tôi', long: 'Hồ sơ', icon: CircleUserRound },
 ]
 
 export default function App() {
   const backend = useBackend();
+  const [sessionTick, setSessionTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setSessionTick((v) => v + 1);
+    window.addEventListener('session-changed', bump);
+    window.addEventListener('storage', bump);
+    return () => { window.removeEventListener('session-changed', bump); window.removeEventListener('storage', bump) };
+  }, []);
+  const role = (getSession().student?.role || 'student');
+  void sessionTick;
+  const tabs = TABS.filter((t) => !t.teacher || role === 'teacher');
   return (
     <div className="layout">
       <aside className="sidebar">
-        <div className="brand">Ôn luyện HSG<small>Học tập trung theo chuyên đề</small></div>
-        <NavLink className="navlink" to="/">Tổng quan</NavLink>
-        <NavLink className="navlink" to="/bank">Ngân hàng câu hỏi</NavLink>
-        <NavLink className="navlink" to="/practice">Luyện theo chuyên đề</NavLink>
-        <NavLink className="navlink" to="/exam">Thi thử bấm giờ</NavLink>
-        <NavLink className="navlink" to="/team">Đội tuyển</NavLink>
-        <NavLink className="navlink" to="/profile">Hồ sơ</NavLink>
-        <NavLink className="navlink" to="/progress">Tiến độ học</NavLink>
-        <NavLink className="navlink" to="/import">Nhập đề DOCX / PDF</NavLink>
+        <div className="brand"><Sprout className="icn lg" /><span>Ôn luyện HSG<small>Học tập trung theo chuyên đề</small></span></div>
+        {tabs.map((t) => {
+          const Icon = t.icon;
+          return <NavLink key={t.to} className="navlink" to={t.to} end={t.end}><Icon className="icn" />{t.long}</NavLink>
+        })}
         <div className="sidefoot">
           <div><span className={`status-dot ${backend.ok == null ? 'wait' : backend.ok ? 'ok' : 'bad'}`} />
             {backend.ok == null ? 'Đang kết nối…' : backend.ok ? (backend.mode === 'php' ? 'Hostinger: đã kết nối' : 'Server: sẵn sàng') : 'Chưa kết nối'}</div>
@@ -79,32 +80,33 @@ export default function App() {
         </div>
       </aside>
       <header className="topbar">
-        <b>Ôn luyện HSG</b>
+        <b><Sprout className="icn sm" />Ôn luyện HSG</b>
         <span className="row">
-          <button className="topbtn" title="Cài app lên điện thoại" onClick={() => window.dispatchEvent(new Event('pwa:ask'))}>📲 Cài app</button>
+          <button className="topbtn" title="Cài app lên điện thoại" onClick={() => window.dispatchEvent(new Event('pwa:ask'))}><TabletSmartphone className="icn sm" />Cài app</button>
           <span className="conn"><span className={`status-dot ${backend.ok == null ? 'wait' : backend.ok ? 'ok' : 'bad'}`} /><span className="conn-txt">{backend.ok ? 'Online' : '…'}</span></span>
         </span>
       </header>
       <main className="main">
         <Routes>
-          <Route path="/" element={<Dashboard backend={backend} />} />
-          <Route path="/bank" element={<Bank />} />
+          <Route path="/" element={<Practice />} />
           <Route path="/practice" element={<Practice />} />
           <Route path="/exam" element={<Exam />} />
-          <Route path="/team" element={<Team />} />
-          <Route path="/profile" element={<Profile />} />
           <Route path="/progress" element={<Progress />} />
-          <Route path="/import" element={<ImportDoc />} />
+          <Route path="/manage" element={<Manage />} />
+          <Route path="/profile" element={<Profile />} />
         </Routes>
       </main>
       <InstallPrompt />
       <nav className="tabbar">
-        {TABS.map((t) => (
-          <NavLink key={t.to} to={t.to} className={({ isActive }) => 'tab' + (isActive ? ' active' : '')}>
-            <span className="tab-ico">{t.icon}</span>
-            <span className="tab-lbl">{t.label}</span>
-          </NavLink>
-        ))}
+        {tabs.map((t) => {
+          const Icon = t.icon;
+          return (
+            <NavLink key={t.to} to={t.to} end={t.end} className={({ isActive }) => 'tab' + (isActive ? ' active' : '')}>
+              <Icon className="icn" />
+              <span className="tab-lbl">{t.label}</span>
+            </NavLink>
+          )
+        })}
       </nav>
     </div>
   )

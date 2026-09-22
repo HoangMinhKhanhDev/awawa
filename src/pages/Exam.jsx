@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Timer, Trophy } from 'lucide-react'
 import { api, getSession } from '../api.js'
 
 function fmt(s) { const m = Math.floor(s / 60), r = s % 60; return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}` }
@@ -94,9 +95,18 @@ export default function Exam() {
       return { question_id: q.id, user_answer: a, is_correct: null }
     })
     const payload = { answers: details, student_name: studentName, student_id: getSession().student?.id || null, focus_exits: f.exits, focus_log: f.log }
+    let prevBest = 0
+    let hadPrev = false
+    if (getSession().token) {
+      try {
+        const prev = await api.attempts({ mode: 'exam' })
+        hadPrev = (prev || []).length > 0
+        prevBest = (prev || []).reduce((m, a) => Math.max(m, a.accuracy || 0), 0)
+      } catch {}
+    }
     try {
       const r = await api.submitExam(exam.id, payload)
-      setResult({ ...r, auto })
+      setResult({ ...r, auto, record: hadPrev && (r.accuracy || 0) > prevBest })
     } catch {
       const c = details.filter((d) => d.is_correct).length
       const mc = details.filter((d) => d.is_correct != null).length
@@ -128,12 +138,13 @@ export default function Exam() {
         ) : (
           <div className="row" style={{ justifyContent: 'space-between' }}>
             <div><b>{exam.title || cfg.title}</b><div className="small muted">{qs.length} câu • {result ? 'Đã nộp' : 'Đang làm'}{studentName && ` • ${studentName}`}</div></div>
-            {!result && <div className="timer">⏱ {fmt(left)}</div>}
+            {!result && <div className="timer" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><Timer className="icn sm" />{fmt(left)}</div>}
             {!result && <span className={`badge ${exits > 0 ? 'red' : 'green'}`}>Rời app: {exits} lần</span>}
             {!result && <button className="btn primary" onClick={() => submit(false)}>Nộp bài</button>}
             {result && <button className="btn" onClick={() => { setExam(null); setResult(null); setQs([]) }}>Làm đề khác</button>}
           </div>
         )}
+        {result && result.record && <div className="record" style={{ marginTop: 10 }}><Trophy className="icn" />Kỷ lục mới! Vượt thành tích thi thử tốt nhất của bạn.</div>}
         {result && <div className="card" style={{ marginTop: 10, background: '#eff6ff' }}><b>Kết quả trắc nghiệm: {result.correct}/{result.total ?? result.totalMC ?? qs.length} đúng ({Math.round((result.accuracy || 0) * 100)}%)</b>{result.auto && <span className="small"> • Tự nộp do hết giờ</span>}<div className="small" style={{ marginTop: 4 }}>Số lần rời app trong lúc làm bài: <b>{result.focus_exits ?? exits}</b>{(result.focus_exits ?? exits) > 0 && <span style={{ color: '#b45309' }}> — giáo viên sẽ thấy con số này trong lịch sử.</span>}</div></div>}
       </div>
 
