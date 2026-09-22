@@ -65,7 +65,65 @@ function body() {
 function check_token($path) {
     if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') return;
     if ($path === '/health') return; // cho widget trạng thái kiểm tra không cần token
+    if ($path === '/auth/register' || $path === '/auth/login') return; // public cho học sinh tự đăng ký/đăng nhập
     if (API_TOKEN === '') return;    // chưa đặt token = mở (chế độ test)
     $got = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
     if (!hash_equals(API_TOKEN, (string)$got)) jerr('Sai API token.', 403);
+}
+
+// ---------------- AUTH HỌC SINH (dùng chung) ----------------
+
+function public_student($r) {
+    if (!$r) return null;
+    unset($r['password_hash']);
+    return $r;
+}
+
+function norm_phone($p) {
+    $p = preg_replace('/[^\d+]/', '', trim((string)$p));
+    return mb_substr($p, 0, 20);
+}
+
+function valid_email($e) {
+    $e = trim((string)$e);
+    if ($e === '') return '';
+    if (!filter_var($e, FILTER_VALIDATE_EMAIL)) jerr('Email không hợp lệ.');
+    return mb_substr($e, 0, 190);
+}
+
+function valid_dob($d) {
+    $d = trim((string)$d);
+    if ($d === '') return null;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) jerr('Ngày sinh phải dạng YYYY-MM-DD.');
+    $t = strtotime($d);
+    if ($t === false || $t > time()) jerr('Ngày sinh không hợp lệ.');
+    return $d;
+}
+
+function valid_gender($g) {
+    $g = trim((string)$g);
+    if ($g === '') return '';
+    if (!in_array($g, array('Nam', 'Nữ', 'Khác'), true)) jerr('Giới tính phải là Nam, Nữ hoặc Khác.');
+    return $g;
+}
+
+function new_session($student_id) {
+    $tok = bin2hex(random_bytes(32));
+    db()->prepare('INSERT INTO sessions (token_hash, student_id, expires_at) VALUES (?,?,DATE_ADD(NOW(), INTERVAL 30 DAY))')
+        ->execute(array(hash('sha256', $tok), $student_id));
+    return $tok;
+}
+
+function session_student() {
+    $tok = $_SERVER['HTTP_X_SESSION_TOKEN'] ?? '';
+    if ($tok === '' || !preg_match('/^[a-f0-9]{64}$/', $tok)) jerr('Chưa đăng nhập.', 401);
+    $h = hash('sha256', $tok);
+    $s = q_one('SELECT s.expires_at, st.* FROM sessions s JOIN students st ON st.id=s.student_id WHERE s.token_hash=?', array($h));
+    if (!$s) jerr('Phiên đăng nhập hết hạn.', 401);
+    if (strtotime($s['expires_at']) < time()) {
+        db()->prepare('DELETE FROM sessions WHERE token_hash=?')->execute(array($h));
+        jerr('Phiên đăng nhập hết hạn.', 401);
+    }
+    unset($s['expires_at']);
+    return public_student($s);
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, setBackendUrl, isCloudMode, isPhpMode } from '../api.js'
+import { api, setBackendUrl, isPhpMode } from '../api.js'
 
 export default function Dashboard({ backend }) {
   const [stats, setStats] = useState(null)
@@ -31,13 +31,12 @@ export default function Dashboard({ backend }) {
           <Link className="btn" to="/team">Quản lý đội tuyển</Link>
           <Link className="btn" to="/import">Nhập đề mới</Link>
         </div>
-        {!backend.ok && !isCloudMode && !isPhpMode && <div className="small" style={{ marginTop: 10, color: '#b45309' }}>Chưa kết nối được server. Mở web qua link ngrok https hoặc cùng WiFi thì app tự nối — nếu vẫn lỗi, nhập tay địa chỉ server ở khung bên dưới rồi bấm Lưu.</div>}
-        {isCloudMode && <div className="small" style={{ marginTop: 10, color: '#15803d' }}>☁️ Đang chạy Cloud (Vercel + Supabase) — tắt máy vẫn dùng được, 1200 hồ sơ thoải mái.</div>}
+        {!backend.ok && !isPhpMode && <div className="small" style={{ marginTop: 10, color: '#b45309' }}>Chưa kết nối được server. Mở web qua link ngrok https hoặc cùng WiFi thì app tự nối — nếu vẫn lỗi, nhập tay địa chỉ server ở khung bên dưới rồi bấm Lưu.</div>}
         {isPhpMode && <div className="small" style={{ marginTop: 10, color: '#15803d' }}>🌐 Đang chạy trên Hostinger + MySQL — tắt máy vẫn dùng được, 1200 hồ sơ thoải mái.</div>}
         {err && <div className="small" style={{ color: '#dc2626', marginTop: 8 }}>{err}</div>}
       </div>
 
-      {!backend.ok && !isCloudMode && !isPhpMode && (
+      {!backend.ok && !isPhpMode && (
         <div className="card">
           <h3 style={{ marginTop: 0 }}>Kết nối server</h3>
           <div className="row">

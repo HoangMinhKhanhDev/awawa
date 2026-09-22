@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api.js'
+import { api, getSession } from '../api.js'
 
 function fmt(s) { const m = Math.floor(s / 60), r = s % 60; return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}` }
 
@@ -93,7 +93,7 @@ export default function Exam() {
       }
       return { question_id: q.id, user_answer: a, is_correct: null }
     })
-    const payload = { answers: details, student_name: studentName, focus_exits: f.exits, focus_log: f.log }
+    const payload = { answers: details, student_name: studentName, student_id: getSession().student?.id || null, focus_exits: f.exits, focus_log: f.log }
     try {
       const r = await api.submitExam(exam.id, payload)
       setResult({ ...r, auto })

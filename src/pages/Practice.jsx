@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api } from '../api.js'
+import { api, getSession } from '../api.js'
 
 export default function Practice() {
   const [subjects, setSubjects] = useState([])
@@ -38,7 +38,7 @@ export default function Practice() {
     })
     try {
       const r = await api.createExam({ title: 'Luyện chuyên đề', mode: 'practice', question_ids: qs.map((q) => q.id) }).then((ex) =>
-        api.submitExam(ex.id, { answers: details, student_name: localStorage.getItem('studentName') || '' })
+        api.submitExam(ex.id, { answers: details, student_name: localStorage.getItem('studentName') || '', student_id: getSession().student?.id || null })
       )
       setResult({ ...r, correct, totalMC })
     } catch {

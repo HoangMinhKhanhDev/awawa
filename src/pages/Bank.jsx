@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, isCloudMode } from '../api.js'
+import { api } from '../api.js'
 
 export default function Bank() {
   const [subjects, setSubjects] = useState([])
@@ -96,7 +96,7 @@ export default function Bank() {
               <label className="lbl">Ảnh minh họa (URL, tùy chọn — rất hữu ích cho Công nghệ: sơ đồ, cây/con, bệnh…)</label>
               <input className="input" placeholder="https://… hoặc /uploads/… (để trống nếu không có)" value={form.image_url} onChange={(e) => setForm({ ...form, image_url: e.target.value })} />
               {form.image_url && <img src={form.image_url} alt="minh họa" style={{ maxWidth: '100%', borderRadius: 8, marginTop: 6 }} onError={(e) => { e.currentTarget.style.display = 'none' }} />}
-              {(isCloudMode || api.uploadQuestionImage) && (
+              {api.uploadQuestionImage && (
                 <div className="row" style={{ marginTop: 6 }}>
                   <input type="file" accept="image/*" onChange={async (e) => {
                     const f = e.target.files?.[0]

@@ -3,16 +3,18 @@ Cháº¡y offline, lÆ°u SQLite local. KhÃ´ng OCR, khÃ´ng Ä‘á»“ng b�
 Run: python main.py --port 8765 --db-path ./data/app.db
 """
 import argparse
+import hashlib
 import json
 import re
+import secrets
 import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -66,6 +68,17 @@ CREATE TABLE IF NOT EXISTS students (
   class_name TEXT DEFAULT '',
   team TEXT DEFAULT '',
   note TEXT DEFAULT '',
+  dob TEXT,
+  gender TEXT DEFAULT '',
+  phone TEXT,
+  email TEXT,
+  password_hash TEXT,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  student_id INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
   created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS exams (
@@ -102,6 +115,14 @@ QUESTION_MIGRATIONS = [
     ("image_url", "TEXT DEFAULT ''"),
 ]
 
+STUDENT_MIGRATIONS = [
+    ("dob", "TEXT"),
+    ("gender", "TEXT DEFAULT ''"),
+    ("phone", "TEXT"),
+    ("email", "TEXT"),
+    ("password_hash", "TEXT"),
+]
+
 # ---------- DB ----------
 class DB:
     def __init__(self, path: Path):
@@ -119,6 +140,13 @@ class DB:
         for name, ddl in QUESTION_MIGRATIONS:
             if name not in qcols:
                 self.conn.execute(f"ALTER TABLE questions ADD COLUMN {name} {ddl}")
+        scols = {r[1] for r in self.conn.execute("PRAGMA table_info(students)").fetchall()}
+        for name, ddl in STUDENT_MIGRATIONS:
+            if name not in scols:
+                self.conn.execute(f"ALTER TABLE students ADD COLUMN {name} {ddl}")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
+          token_hash TEXT PRIMARY KEY, student_id INTEGER NOT NULL,
+          expires_at TEXT NOT NULL, created_at TEXT)""")
         self.conn.commit()
         if self.count("questions") == 0:
             seed(self)
@@ -518,7 +546,7 @@ def list_students(team: Optional[str] = None, search: Optional[str] = None):
     if search:
         sql += " AND name LIKE ?"; params.append(f"%{search}%")
     sql += " ORDER BY team, name LIMIT 500"
-    return [dict(r) for r in db.q(sql, tuple(params))]
+    return [public_student(r) for r in db.q(sql, tuple(params))]
 
 
 @app.post("/api/students")
@@ -545,6 +573,230 @@ def update_student(sid: int, payload: StudentIn):
 @app.delete("/api/students/{sid}")
 def delete_student(sid: int):
     db.exec("DELETE FROM students WHERE id=?", (sid,))
+    return {"ok": True}
+
+
+# ---------- AUTH HOC SINH (LAN mirror) ----------
+def hash_pw(pw: str) -> str:
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt.encode(), 100000)
+    return f"pbkdf2$100000${salt}${dk.hex()}"
+
+
+def verify_pw(pw: str, h: str) -> bool:
+    try:
+        _, it, salt, hexd = (h or "").split("$")
+        dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt.encode(), int(it))
+        return secrets.compare_digest(dk.hex(), hexd)
+    except Exception:
+        return False
+
+
+def public_student(r) -> dict:
+    d = dict(r)
+    d.pop("password_hash", None)
+    return d
+
+
+def norm_phone(p) -> str:
+    return re.sub(r"[^\d+]", "", (p or "").strip())[:20]
+
+
+def check_email(e: str) -> str:
+    e = (e or "").strip()[:190]
+    if e == "":
+        return ""
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", e):
+        raise HTTPException(400, "Email khong hop le.")
+    return e
+
+
+def check_dob(d) -> Optional[str]:
+    d = (d or "").strip()
+    if d == "":
+        return None
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+        raise HTTPException(400, "Ngay sinh phai dang YYYY-MM-DD.")
+    try:
+        t = datetime.strptime(d, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Ngay sinh khong hop le.")
+    if t > datetime.now():
+        raise HTTPException(400, "Ngay sinh khong hop le.")
+    return d
+
+
+def check_gender(g: str) -> str:
+    g = (g or "").strip()
+    if g == "":
+        return ""
+    if g not in ("Nam", "Nu", "Khac", "Nữ", "Khác"):
+        raise HTTPException(400, "Gioi tinh phai la Nam, Nu hoac Khac.")
+    return {"Nữ": "Nu", "Khác": "Khac"}.get(g, g)
+
+
+def new_session(student_id: int) -> str:
+    tok = secrets.token_hex(32)
+    exp = (datetime.now() + timedelta(days=30)).isoformat(timespec="seconds")
+    db.exec("INSERT INTO sessions (token_hash, student_id, expires_at, created_at) VALUES (?,?,?,?)",
+            (hashlib.sha256(tok.encode()).hexdigest(), student_id, exp,
+             datetime.now().isoformat(timespec="seconds")))
+    return tok
+
+
+def current_student(request: Request) -> dict:
+    tok = request.headers.get("x-session-token", "")
+    if not re.fullmatch(r"[a-f0-9]{64}", tok or ""):
+        raise HTTPException(401, "Chua dang nhap.")
+    h = hashlib.sha256(tok.encode()).hexdigest()
+    s = db.q1("SELECT s.expires_at, st.* FROM sessions s JOIN students st ON st.id=s.student_id WHERE s.token_hash=?", (h,))
+    if not s:
+        raise HTTPException(401, "Phien dang nhap het han.")
+    try:
+        expired = datetime.fromisoformat(s["expires_at"]) < datetime.now()
+    except Exception:
+        expired = True
+    if expired:
+        db.exec("DELETE FROM sessions WHERE token_hash=?", (h,))
+        raise HTTPException(401, "Phien dang nhap het han.")
+    d = public_student(s)
+    d.pop("expires_at", None)
+    return d
+
+
+class RegisterIn(BaseModel):
+    name: str = ""
+    class_name: str = ""
+    dob: Optional[str] = None
+    gender: str = ""
+    phone: str = ""
+    email: str = ""
+    password: str = ""
+
+
+class LoginIn(BaseModel):
+    login: str = ""
+    password: str = ""
+
+
+class ProfileIn(BaseModel):
+    name: Optional[str] = None
+    class_name: Optional[str] = None
+    dob: Optional[str] = None
+    gender: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+
+class PasswordIn(BaseModel):
+    old_password: str = ""
+    new_password: str = ""
+
+
+class ResetIn(BaseModel):
+    password: str = ""
+
+
+@app.post("/api/auth/register")
+def auth_register(payload: RegisterIn):
+    name = (payload.name or "").strip()[:100]
+    cls = (payload.class_name or "").strip()[:50]
+    if not name:
+        raise HTTPException(400, "Thieu ho ten.")
+    if not cls:
+        raise HTTPException(400, "Thieu lop.")
+    if len(payload.password or "") < 6:
+        raise HTTPException(400, "Mat khau it nhat 6 ky tu.")
+    phone = norm_phone(payload.phone)
+    email = check_email(payload.email)
+    if phone == "" and email == "":
+        raise HTTPException(400, "Can so dien thoai hoac email (it nhat 1 trong 2).")
+    if phone != "" and db.q1("SELECT 1 FROM students WHERE phone=?", (phone,)):
+        raise HTTPException(400, "So dien thoai da duoc dung.")
+    if email != "" and db.q1("SELECT 1 FROM students WHERE email=?", (email,)):
+        raise HTTPException(400, "Email da duoc dung.")
+    dob = check_dob(payload.dob)
+    gender = check_gender(payload.gender or "")
+    now = datetime.now().isoformat(timespec="seconds")
+    cur = db.exec("INSERT INTO students (name, class_name, dob, gender, phone, email, password_hash, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                  (name, cls, dob, gender, phone or None, email or None, hash_pw(payload.password), now))
+    sid = cur.lastrowid
+    tok = new_session(sid)
+    return {"token": tok, "student": public_student(db.q1("SELECT * FROM students WHERE id=?", (sid,)))}
+
+
+@app.post("/api/auth/login")
+def auth_login(payload: LoginIn):
+    login = (payload.login or "").strip()
+    if login == "" or (payload.password or "") == "":
+        raise HTTPException(400, "Thieu ten dang nhap hoac mat khau.")
+    db.exec("DELETE FROM sessions WHERE expires_at < ?", (datetime.now().isoformat(timespec="seconds"),))
+    phone = norm_phone(login)
+    st = db.q1("SELECT * FROM students WHERE phone=? OR email=?", (phone, login))
+    if not st or not st["password_hash"] or not verify_pw(payload.password, st["password_hash"]):
+        raise HTTPException(401, "Sai ten dang nhap hoac mat khau.")
+    tok = new_session(st["id"])
+    return {"token": tok, "student": public_student(db.q1("SELECT * FROM students WHERE id=?", (st["id"],)))}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    return {"student": current_student(request)}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    tok = request.headers.get("x-session-token", "")
+    if re.fullmatch(r"[a-f0-9]{64}", tok or ""):
+        db.exec("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(tok.encode()).hexdigest(),))
+    return {"ok": True}
+
+
+@app.put("/api/auth/profile")
+def auth_profile(payload: ProfileIn, request: Request):
+    me = current_student(request)
+    name = (payload.name if payload.name is not None else me["name"] or "").strip()[:100]
+    cls = (payload.class_name if payload.class_name is not None else me["class_name"] or "").strip()[:50]
+    if not name:
+        raise HTTPException(400, "Thieu ho ten.")
+    if not cls:
+        raise HTTPException(400, "Thieu lop.")
+    phone = norm_phone(payload.phone if payload.phone is not None else me.get("phone") or "")
+    email = check_email(payload.email if payload.email is not None else me.get("email") or "")
+    if phone == "" and email == "":
+        raise HTTPException(400, "Can so dien thoai hoac email (it nhat 1 trong 2).")
+    if phone != "" and db.q1("SELECT 1 FROM students WHERE phone=? AND id<>?", (phone, me["id"])):
+        raise HTTPException(400, "So dien thoai da duoc dung.")
+    if email != "" and db.q1("SELECT 1 FROM students WHERE email=? AND id<>?", (email, me["id"])):
+        raise HTTPException(400, "Email da duoc dung.")
+    dob = check_dob(payload.dob if payload.dob is not None else me.get("dob") or "")
+    gender = check_gender(payload.gender if payload.gender is not None else me.get("gender") or "")
+    db.exec("UPDATE students SET name=?, class_name=?, dob=?, gender=?, phone=?, email=? WHERE id=?",
+            (name, cls, dob, gender, phone or None, email or None, me["id"]))
+    return {"student": public_student(db.q1("SELECT * FROM students WHERE id=?", (me["id"],)))}
+
+
+@app.put("/api/auth/password")
+def auth_password(payload: PasswordIn, request: Request):
+    me = current_student(request)
+    full = db.q1("SELECT * FROM students WHERE id=?", (me["id"],))
+    if not full["password_hash"] or not verify_pw(payload.old_password or "", full["password_hash"]):
+        raise HTTPException(401, "Mat khau cu khong dung.")
+    if len(payload.new_password or "") < 6:
+        raise HTTPException(400, "Mat khau moi it nhat 6 ky tu.")
+    db.exec("UPDATE students SET password_hash=? WHERE id=?", (hash_pw(payload.new_password), me["id"]))
+    db.exec("DELETE FROM sessions WHERE student_id=?", (me["id"],))
+    return {"ok": True, "token": new_session(me["id"])}
+
+
+@app.put("/api/students/{sid}/reset-password")
+def reset_password(sid: int, payload: ResetIn):
+    if not db.q1("SELECT 1 FROM students WHERE id=?", (sid,)):
+        raise HTTPException(404, "Khong tim thay hoc sinh")
+    if len(payload.password or "") < 6:
+        raise HTTPException(400, "Mat khau moi it nhat 6 ky tu.")
+    db.exec("UPDATE students SET password_hash=? WHERE id=?", (hash_pw(payload.password), sid))
+    db.exec("DELETE FROM sessions WHERE student_id=?", (sid,))
     return {"ok": True}
 
 

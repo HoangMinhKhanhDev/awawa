@@ -7,8 +7,9 @@ import Exam from './pages/Exam.jsx'
 import Progress from './pages/Progress.jsx'
 import ImportDoc from './pages/ImportDoc.jsx'
 import Team from './pages/Team.jsx'
+import Profile from './pages/Profile.jsx'
 import InstallPrompt from './components/InstallPrompt.jsx'
-import { getBackendUrl, api, setBackendUrl, isCloudMode, isPhpMode } from './api.js'
+import { getBackendUrl, api, setBackendUrl, isPhpMode } from './api.js'
 
 function useBackend() {
   const [url, setUrl] = useState('...');
@@ -17,9 +18,9 @@ function useBackend() {
 
   const check = async (u) => {
     try {
-      if (isCloudMode || isPhpMode) {
+      if (isPhpMode) {
         const h = await api.health();
-        setUrl(isPhpMode ? h.backend || 'Hostinger' : 'Supabase Cloud'); setOk(true); setInfo(h);
+        setUrl(h.backend || 'Hostinger'); setOk(true); setInfo(h);
         return;
       }
       const base = u || await getBackendUrl();
@@ -34,14 +35,14 @@ function useBackend() {
 
   useEffect(() => {
     getBackendUrl().then((u) => { setUrl(u); check(u); });
-    if (isCloudMode || isPhpMode) return; // hosting luôn thức, khỏi poll dày
+    if (isPhpMode) return; // hosting luôn thức, khỏi poll dày
     const t = setInterval(() => check(), 8000);
     if (window.electronAPI?.onBackendReady) window.electronAPI.onBackendReady((u) => check(u));
     return () => clearInterval(t);
     // eslint-disable-next-line
   }, []);
 
-  const mode = isCloudMode ? 'cloud' : isPhpMode ? 'php' : 'legacy';
+  const mode = isPhpMode ? 'php' : 'legacy';
   return { url, ok, info, check, mode };
 }
 
@@ -51,6 +52,7 @@ const TABS = [
   { to: '/practice', label: 'Luyện', icon: '✏️' },
   { to: '/exam', label: 'Thi', icon: '⏱' },
   { to: '/team', label: 'Đội', icon: '👥' },
+  { to: '/profile', label: 'Hồ sơ', icon: '👤' },
   { to: '/progress', label: 'Tiến độ', icon: '📈' },
   { to: '/import', label: 'Nhập đề', icon: '📥' }
 ]
@@ -66,13 +68,14 @@ export default function App() {
         <NavLink className="navlink" to="/practice">Luyện theo chuyên đề</NavLink>
         <NavLink className="navlink" to="/exam">Thi thử bấm giờ</NavLink>
         <NavLink className="navlink" to="/team">Đội tuyển</NavLink>
+        <NavLink className="navlink" to="/profile">Hồ sơ</NavLink>
         <NavLink className="navlink" to="/progress">Tiến độ học</NavLink>
         <NavLink className="navlink" to="/import">Nhập đề DOCX / PDF</NavLink>
         <div className="sidefoot">
           <div><span className={`status-dot ${backend.ok == null ? 'wait' : backend.ok ? 'ok' : 'bad'}`} />
-            {backend.ok == null ? 'Đang kết nối…' : backend.ok ? (backend.mode === 'cloud' ? 'Cloud: đã kết nối' : backend.mode === 'php' ? 'Hostinger: đã kết nối' : 'Server: sẵn sàng') : 'Chưa kết nối'}</div>
+            {backend.ok == null ? 'Đang kết nối…' : backend.ok ? (backend.mode === 'php' ? 'Hostinger: đã kết nối' : 'Server: sẵn sàng') : 'Chưa kết nối'}</div>
           <div className="small" style={{ marginTop: 6, wordBreak: 'break-all' }}>{backend.url}</div>
-          <div className="small" style={{ marginTop: 6 }}>{backend.mode === 'legacy' ? 'Tự luận tự đối chiếu đáp án' : backend.mode === 'php' ? 'MySQL Hostinger — tắt máy vẫn chạy' : 'Supabase Cloud — tắt máy vẫn chạy'}</div>
+          <div className="small" style={{ marginTop: 6 }}>{backend.mode === 'legacy' ? 'Tự luận tự đối chiếu đáp án' : 'MySQL Hostinger — tắt máy vẫn chạy'}</div>
         </div>
       </aside>
       <header className="topbar">
@@ -89,6 +92,7 @@ export default function App() {
           <Route path="/practice" element={<Practice />} />
           <Route path="/exam" element={<Exam />} />
           <Route path="/team" element={<Team />} />
+          <Route path="/profile" element={<Profile />} />
           <Route path="/progress" element={<Progress />} />
           <Route path="/import" element={<ImportDoc />} />
         </Routes>

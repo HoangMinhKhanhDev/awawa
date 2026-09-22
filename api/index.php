@@ -99,6 +99,86 @@ if ($method === 'GET' && $path === '/health') {
     j(array('status' => 'ok', 'backend' => 'hostinger-mysql', 'time' => date('Y-m-d\TH:i:s'), 'total_questions' => $n, 'db_error' => $err));
 }
 
+// ---------------- AUTH HỌC SINH ----------------
+if ($path === '/auth/register' && $method === 'POST') {
+    $b = body();
+    $name = mb_substr(trim($b['name'] ?? ''), 0, 100);
+    $class = mb_substr(trim($b['class_name'] ?? ''), 0, 50);
+    $pw = (string)($b['password'] ?? '');
+    if ($name === '') jerr('Thiếu họ tên.');
+    if ($class === '') jerr('Thiếu lớp.');
+    if (mb_strlen($pw) < 6) jerr('Mật khẩu ít nhất 6 ký tự.');
+    $phone = norm_phone($b['phone'] ?? '');
+    $email = valid_email($b['email'] ?? '');
+    if ($phone === '' && $email === '') jerr('Cần số điện thoại hoặc email (ít nhất 1 trong 2).');
+    if ($phone !== '' && q_one('SELECT 1 FROM students WHERE phone=?', array($phone))) jerr('Số điện thoại đã được dùng.');
+    if ($email !== '' && q_one('SELECT 1 FROM students WHERE email=?', array($email))) jerr('Email đã được dùng.');
+    $dob = valid_dob($b['dob'] ?? '');
+    $gender = valid_gender($b['gender'] ?? '');
+    db()->prepare('INSERT INTO students (name, class_name, dob, gender, phone, email, password_hash) VALUES (?,?,?,?,?,?,?)')
+        ->execute(array($name, $class, $dob, $gender, $phone === '' ? null : $phone, $email === '' ? null : $email, password_hash($pw, PASSWORD_DEFAULT)));
+    $sid = (int)db()->lastInsertId();
+    $tok = new_session($sid);
+    j(array('token' => $tok, 'student' => public_student(q_one('SELECT * FROM students WHERE id=?', array($sid)))));
+}
+
+if ($path === '/auth/login' && $method === 'POST') {
+    $b = body();
+    $login = trim((string)($b['login'] ?? ''));
+    $pw = (string)($b['password'] ?? '');
+    if ($login === '' || $pw === '') jerr('Thiếu tên đăng nhập hoặc mật khẩu.');
+    db()->prepare('DELETE FROM sessions WHERE expires_at < NOW()')->execute();
+    $phone = norm_phone($login);
+    $st = q_one('SELECT * FROM students WHERE phone=? OR email=?', array($phone, $login));
+    if (!$st || empty($st['password_hash']) || !password_verify($pw, $st['password_hash'])) jerr('Sai tên đăng nhập hoặc mật khẩu.', 401);
+    $tok = new_session((int)$st['id']);
+    j(array('token' => $tok, 'student' => public_student(q_one('SELECT * FROM students WHERE id=?', array($st['id'])))));
+}
+
+if ($path === '/auth/me' && $method === 'GET') {
+    j(array('student' => session_student()));
+}
+
+if ($path === '/auth/logout' && $method === 'POST') {
+    $tok = $_SERVER['HTTP_X_SESSION_TOKEN'] ?? '';
+    if (preg_match('/^[a-f0-9]{64}$/', $tok)) {
+        db()->prepare('DELETE FROM sessions WHERE token_hash=?')->execute(array(hash('sha256', $tok)));
+    }
+    j(array('ok' => true));
+}
+
+if ($path === '/auth/profile' && $method === 'PUT') {
+    $me = session_student();
+    $b = body();
+    $name = mb_substr(trim($b['name'] ?? $me['name']), 0, 100);
+    $class = mb_substr(trim($b['class_name'] ?? $me['class_name']), 0, 50);
+    if ($name === '') jerr('Thiếu họ tên.');
+    if ($class === '') jerr('Thiếu lớp.');
+    $phone = norm_phone($b['phone'] ?? ($me['phone'] ?? ''));
+    $email = valid_email($b['email'] ?? ($me['email'] ?? ''));
+    if ($phone === '' && $email === '') jerr('Cần số điện thoại hoặc email (ít nhất 1 trong 2).');
+    if ($phone !== '' && q_one('SELECT 1 FROM students WHERE phone=? AND id<>?', array($phone, $me['id']))) jerr('Số điện thoại đã được dùng.');
+    if ($email !== '' && q_one('SELECT 1 FROM students WHERE email=? AND id<>?', array($email, $me['id']))) jerr('Email đã được dùng.');
+    $dob = valid_dob($b['dob'] ?? ($me['dob'] ?? ''));
+    $gender = valid_gender($b['gender'] ?? ($me['gender'] ?? ''));
+    db()->prepare('UPDATE students SET name=?, class_name=?, dob=?, gender=?, phone=?, email=? WHERE id=?')
+        ->execute(array($name, $class, $dob, $gender, $phone === '' ? null : $phone, $email === '' ? null : $email, $me['id']));
+    j(array('student' => public_student(q_one('SELECT * FROM students WHERE id=?', array($me['id'])))));
+}
+
+if ($path === '/auth/password' && $method === 'PUT') {
+    $me = session_student();
+    $b = body();
+    $full = q_one('SELECT * FROM students WHERE id=?', array($me['id']));
+    if (empty($full['password_hash']) || !password_verify((string)($b['old_password'] ?? ''), $full['password_hash'])) jerr('Mật khẩu cũ không đúng.', 401);
+    $npw = (string)($b['new_password'] ?? '');
+    if (mb_strlen($npw) < 6) jerr('Mật khẩu mới ít nhất 6 ký tự.');
+    db()->prepare('UPDATE students SET password_hash=? WHERE id=?')->execute(array(password_hash($npw, PASSWORD_DEFAULT), $me['id']));
+    db()->prepare('DELETE FROM sessions WHERE student_id=?')->execute(array($me['id']));
+    $tok = new_session((int)$me['id']);
+    j(array('ok' => true, 'token' => $tok));
+}
+
 // ---------------- SUBJECTS ----------------
 if ($method === 'GET' && $path === '/subjects') {
     j(q_all('SELECT * FROM subjects ORDER BY name'));
@@ -364,7 +444,7 @@ if ($path === '/students') {
         if (!empty($_GET['team'])) { $sql .= ' AND team=?'; $p[] = $_GET['team']; }
         if (!empty($_GET['search'])) { $sql .= ' AND name LIKE ?'; $p[] = '%' . $_GET['search'] . '%'; }
         $sql .= ' ORDER BY team, name LIMIT 500';
-        j(q_all($sql, $p));
+        j(array_map('public_student', q_all($sql, $p)));
     }
     if ($method === 'POST') {
         $b = body();
@@ -394,6 +474,19 @@ if (preg_match('#^/students/(\d+)$#', $path, $m)) {
         db()->prepare('DELETE FROM students WHERE id=?')->execute(array($sid));
         j(array('ok' => true));
     }
+}
+
+// Giáo viên đặt lại mật khẩu cho học sinh (quên mật khẩu) — cần X-Api-Token.
+if (preg_match('#^/students/(\d+)/reset-password$#', $path, $m)) {
+    if ($method !== 'PUT') jerr('Không hỗ trợ.', 405);
+    $sid = (int)$m[1];
+    if (!q_one('SELECT 1 FROM students WHERE id=?', array($sid))) jerr('Không tìm thấy học sinh', 404);
+    $b = body();
+    $npw = (string)($b['password'] ?? '');
+    if (mb_strlen($npw) < 6) jerr('Mật khẩu mới ít nhất 6 ký tự.');
+    db()->prepare('UPDATE students SET password_hash=? WHERE id=?')->execute(array(password_hash($npw, PASSWORD_DEFAULT), $sid));
+    db()->prepare('DELETE FROM sessions WHERE student_id=?')->execute(array($sid));
+    j(array('ok' => true));
 }
 
 // ---------------- UPLOAD ẢNH ----------------

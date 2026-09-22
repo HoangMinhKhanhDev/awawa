@@ -143,8 +143,15 @@ export default function Team() {
                   <td>
                     <div className="row">
                       <button className="btn" onClick={() => edit(s)}>Sửa</button>
+                      <button className="btn" title="Đặt lại mật khẩu khi học sinh quên" onClick={async () => {
+                        const npw = prompt(`Đặt lại mật khẩu cho ${s.name} (ít nhất 6 ký tự):`)
+                        if (!npw) return
+                        try { await api.resetStudentPassword(s.id, npw); alert('Đã đặt lại mật khẩu.') }
+                        catch (e) { alert(e.message) }
+                      }}>🔑 MK</button>
                       <button className="btn danger" onClick={async () => { if (confirm(`Xóa ${s.name}?`)) { await api.deleteStudent(s.id); load() } }}>Xóa</button>
                     </div>
+                    {s.phone || s.email ? <div className="small muted">{[s.phone, s.email].filter(Boolean).join(' • ')}</div> : <div className="small muted">chưa có tài khoản</div>}
                   </td>
                 </tr>
               )
