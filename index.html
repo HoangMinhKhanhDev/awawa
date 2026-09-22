@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Ôn luyện học sinh giỏi THPT: ngân hàng câu hỏi, luyện chuyên đề, thi thử bấm giờ." />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Ôn luyện HSG" />
+    <link rel="apple-touch-icon" href="/icons/apple-180.png" />
+    <link rel="icon" type="image/png" href="/icons/icon-192.png" />
+    <title>Ôn luyện HSG THPT</title>
+  </head>
+  <body>
+    <div id="root"><p style="font-family:sans-serif;padding:24px;color:#475569">Đang tải Ôn luyện HSG… (nếu đứng yên quá 10 giây: kiểm tra mạng rồi kéo để tải lại trang)</p></div>
+    <script>
+      // Bẫy lỗi khởi động: nếu JS chính nổ trước khi React mount,
+      // hiện lỗi ngay trên trang thay vì trắng tinh (để dễ bắt bệnh).
+      window.__bootOK = false;
+      window.addEventListener('error', function (e) {
+        if (window.__bootOK) return;
+        var r = document.getElementById('root');
+        if (r) r.innerHTML = '<p style="font-family:sans-serif;padding:24px;color:#b91c1c">App lỗi khởi động: '
+          + String((e && e.message) || 'unknown').slice(0, 200)
+          + '<br><span style="color:#475569">Chụp màn hình này gửi giáo viên.</span></p>';
+      }, true);
+      setTimeout(function () {
+        if (!window.__bootOK) {
+          var r = document.getElementById('root');
+          if (r && !r.querySelector('.layout')) r.innerHTML = '<p style="font-family:sans-serif;padding:24px;color:#b45309">Không tải được app (mạng chậm hoặc link hết hạn). Kéo để tải lại trang.</p>';
+        }
+      }, 15000);
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

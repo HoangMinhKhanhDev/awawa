@@ -1,0 +1,60 @@
+{
+  "name": "on-luyen-hsg",
+  "version": "0.1.0",
+  "description": "Phan mem on luyen hoc sinh gioi THPT - Electron + React + Python",
+  "main": "electron/main.cjs",
+  "author": "",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron ./electron/main.cjs",
+    "dev": "concurrently -k \"npm run dev:renderer\" \"npm run dev:electron\"",
+    "dev:python": "python python-core/main.py --port 8765",
+    "dev:python-lan": "python python-core/main.py --host 0.0.0.0 --port 8765",
+    "dev:lan": "vite --host",
+    "tunnel": "node scripts/cloudflared.cjs",
+    "tunnel:ngrok": "node scripts/ngrok.cjs",
+    "prod:lan": "npm run build:renderer && python python-core/main.py --host 0.0.0.0 --port 8765 --static ../dist",
+    "build:renderer": "vite build",
+    "preview": "vite preview",
+    "dist": "npm run build:renderer && electron-builder",
+    "lint": "eslint . --ext .js,.jsx,.cjs || echo \"lint done\""
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "ngrok": "^5.0.0-beta.2",
+    "vite": "^6.0.3",
+    "vite-plugin-pwa": "^1.3.0",
+    "wait-on": "^8.0.1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "mammoth": "^1.9.1",
+    "pdfjs-dist": "^4.10.38",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "build": {
+    "appId": "com.hsg.onluyen",
+    "productName": "OnLuyenHSG",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}

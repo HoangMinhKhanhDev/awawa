@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dev-dist/
+dist-electron/
+release/
+bin/
+*.log
+public-url.txt
+python-core/venv/
+python-core/data/
+python-core/__pycache__/
+*.pyc
+api/uploads/
+api/local.php
+.DS_Store
+.env
+.env.local
