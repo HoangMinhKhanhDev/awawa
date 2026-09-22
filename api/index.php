@@ -93,9 +93,10 @@ function row_to_attempt($r) {
 
 // ---------------- HEALTH ----------------
 if ($method === 'GET' && $path === '/health') {
-    $n = 0;
-    try { $n = (int)q_one('SELECT COUNT(*) c FROM questions')['c']; } catch (Exception $e) {}
-    j(array('status' => 'ok', 'backend' => 'hostinger-mysql', 'time' => date('Y-m-d\TH:i:s'), 'total_questions' => $n));
+    $n = 0; $err = '';
+    try { $n = (int)q_one('SELECT COUNT(*) c FROM questions')['c']; }
+    catch (Exception $e) { $err = 'DB chưa kết nối: kiểm tra DB_HOST/DB_NAME/DB_USER/DB_PASS trong Environment variables hoặc api/local.php.'; }
+    j(array('status' => 'ok', 'backend' => 'hostinger-mysql', 'time' => date('Y-m-d\TH:i:s'), 'total_questions' => $n, 'db_error' => $err));
 }
 
 // ---------------- SUBJECTS ----------------
