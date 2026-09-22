@@ -17,6 +17,7 @@
     "tunnel": "node scripts/cloudflared.cjs",
     "tunnel:ngrok": "node scripts/ngrok.cjs",
     "prod:lan": "npm run build:renderer && python python-core/main.py --host 0.0.0.0 --port 8765 --static ../dist",
+    "build": "npm run build:renderer",
     "build:renderer": "vite build && node scripts/copy-api.cjs",
     "preview": "vite preview",
     "dist": "npm run build:renderer && electron-builder",
