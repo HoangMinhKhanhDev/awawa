@@ -1,4 +1,4 @@
-// Port của parse_text_to_drafts bên python-core/main.py sang JS,
+// Port của parse_text_to_drafts bên python-core/files.py sang JS,
 // để mục "Nhập đề" chạy hoàn toàn trên trình duyệt (không cần server).
 // Giữ nguyên quy ước: Câu 1: … / A. … / Đáp án: A / Lời giải: …
 
