@@ -6,6 +6,7 @@ import { api, getSession } from '../api.js'
 function statusBadge(st) {
   if (st === 'graded') return <span className="badge green"><Award className="icn sm" />Đã chấm</span>
   if (st === 'submitted') return <span className="badge amber"><Clock className="icn sm" />Đã nộp — chờ chấm</span>
+  if (st === 'draft') return <span className="badge">Bản nháp</span>
   return <span className="badge">Chưa nộp</span>
 }
 
@@ -22,7 +23,7 @@ function AssignmentList() {
   const [showCreate, setShowCreate] = useState(false)
   const [subjects, setSubjects] = useState([])
   const [topics, setTopics] = useState([])
-  const [form, setForm] = useState({ class_id: '', subject_id: '', topic_id: '', title: '', description: '', deadline: '', questions: ['', '', ''] })
+  const [form, setForm] = useState({ class_id: '', subject_id: '', topic_id: '', title: '', description: '', deadline: '', questions: [{ content: '', points: 2 }, { content: '', points: 3 }, { content: '', points: 5 }] })
   const [msg, setMsg] = useState('')
   const nav = useNavigate()
 
@@ -45,19 +46,21 @@ function AssignmentList() {
     setMsg('')
     if (!form.title.trim()) return setMsg('Nhập tên bài tập.')
     if (!form.class_id) return setMsg('Chọn lớp.')
-    const qs = form.questions.map((c) => c.trim()).filter(Boolean)
+    const qs = form.questions.filter((q) => q.content.trim())
     if (!qs.length) return setMsg('Nhập ít nhất 1 câu hỏi.')
     try {
       const r = await api.createAssignment({
         class_id: Number(form.class_id), topic_id: form.topic_id || null,
         title: form.title.trim(), description: form.description.trim(),
-        deadline: form.deadline || null, questions: qs.map((content) => ({ content })),
+        deadline: form.deadline || null,
+        questions: qs.map((q) => ({ content: q.content.trim(), points: Number(q.points) || 1 })),
       })
       setShowCreate(false)
-      setForm({ class_id: form.class_id, topic_id: '', title: '', description: '', deadline: '', questions: ['', '', ''] })
+      setForm({ class_id: form.class_id, subject_id: form.subject_id, topic_id: '', title: '', description: '', deadline: '', questions: [{ content: '', points: 2 }, { content: '', points: 3 }, { content: '', points: 5 }] })
       nav(`/assignments/${r.id}`)
     } catch (e) { setMsg(String(e.message || e)) }
   }
+  const totalPts = form.questions.reduce((s, q) => s + (Number(q.points) || 0), 0)
 
   return (
     <div className="grid">
@@ -101,14 +104,20 @@ function AssignmentList() {
           </select>
           <label className="lbl">Mô tả</label>
           <textarea className="textarea" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Hướng dẫn làm bài (tùy chọn)" />
-          <label className="lbl">Câu hỏi * (1 câu 1 dòng)</label>
+          <label className="lbl">Câu hỏi * (nội dung + điểm)</label>
           {form.questions.map((q, i) => (
             <div key={i} className="row" style={{ marginBottom: 6 }}>
               <span className="badge">Câu {i + 1}</span>
-              <input className="input" style={{ flex: 1 }} value={q} onChange={(e) => { const qs = [...form.questions]; qs[i] = e.target.value; setForm({ ...form, questions: qs }) }} />
+              <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="Nội dung câu hỏi…" value={q.content}
+                onChange={(e) => { const qs = [...form.questions]; qs[i] = { ...q, content: e.target.value }; setForm({ ...form, questions: qs }) }} />
+              <input className="input" style={{ width: 78 }} type="number" min="0.5" step="0.5" title="Điểm câu này" value={q.points}
+                onChange={(e) => { const qs = [...form.questions]; qs[i] = { ...q, points: e.target.value }; setForm({ ...form, questions: qs }) }} />
             </div>
           ))}
-          <button className="btn" onClick={() => setForm({ ...form, questions: [...form.questions, ''] })}>+ Thêm câu</button>
+          <div className="row">
+            <button className="btn" onClick={() => setForm({ ...form, questions: [...form.questions, { content: '', points: 1 }] })}>+ Thêm câu</button>
+            <span className="small muted">Tổng điểm đề: {totalPts || '—'}</span>
+          </div>
           {msg && <div className="small" style={{ color: '#b91c1c', marginTop: 8 }}>{msg}</div>}
           <div className="row" style={{ marginTop: 12 }}>
             <button className="btn primary" onClick={create}>Tạo bài tập</button>
@@ -166,10 +175,24 @@ function AssignmentDetail() {
     setSaving(false)
   }
 
+  const saveDraft = async () => {
+    setSaving(true); setMsg('')
+    try {
+      const list = (a.questions || []).map((q) => ({ idx: q.idx, text: answers[q.idx] || '' }))
+      await api.draftAssignment(a.id, list)
+      setMsg('Đã lưu nháp.')
+      await load()
+    } catch (e) { setMsg(String(e.message || e)) }
+    setSaving(false)
+  }
+
   if (!a) return <div className="grid"><div className="empty">{msg || 'Đang tải…'}</div></div>
   const sub = a.my_submission
   const graded = sub && sub.score != null
   const canEdit = !teacher && (!sub || !graded)
+  const totalPts = (a.questions || []).reduce((s, q) => s + (Number(q.points) || 0), 0)
+  let qscores = null
+  try { qscores = sub?.question_scores ? JSON.parse(sub.question_scores) : null } catch {}
 
   return (
     <div className="grid">
@@ -178,11 +201,15 @@ function AssignmentDetail() {
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div>
             <h1 style={{ margin: 0 }}>{a.title}</h1>
-            <div className="small muted">{a.class_name}{a.topic_name ? ` • ${a.topic_name}` : ''}{a.deadline ? ` • hạn ${new Date(a.deadline).toLocaleDateString('vi-VN')}` : ''}</div>
+            <div className="small muted">
+              {a.class_name}{a.topic_name ? ` • ${a.topic_name}` : ''}{a.deadline ? ` • hạn ${new Date(a.deadline).toLocaleDateString('vi-VN')}` : ''}
+              {totalPts ? ` • thang ${totalPts} điểm` : ''}
+            </div>
           </div>
           {!teacher && sub && (graded
             ? <span className="badge green"><Award className="icn sm" />Điểm: {sub.score} / 10</span>
-            : statusBadge('submitted'))}
+            : statusBadge(sub?.submitted_at ? 'submitted' : 'draft'))}
+          {!teacher && !sub && statusBadge('todo')}
         </div>
         {a.description && <div className="small" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{a.description}</div>}
         {graded && sub.feedback && (
@@ -198,7 +225,10 @@ function AssignmentDetail() {
       {(a.questions || []).map((q) => (
         <div className="card" key={q.id}>
           <div className="row" style={{ justifyContent: 'space-between' }}>
-            <b>Câu {q.idx}</b>
+            <b>Câu {q.idx}{q.points ? ` — ${q.points} điểm` : ''}</b>
+            {qscores && qscores[q.idx] != null && (
+              <span className="badge green">Được {qscores[q.idx]} / {q.points}</span>
+            )}
             {teacher && q.answer && <span className="small muted">Đáp án mẫu có sẵn</span>}
           </div>
           <div style={{ whiteSpace: 'pre-wrap', margin: '8px 0' }}>{q.content}</div>
@@ -217,10 +247,11 @@ function AssignmentDetail() {
       {!teacher && canEdit && (
         <div className="card">
           <div className="row">
-            <button className="btn primary" onClick={submit} disabled={saving}><CheckCircle2 className="icn sm" />{saving ? 'Đang nộp…' : sub ? 'Nộp lại' : 'Nộp bài'}</button>
-            {sub && <span className="small muted">Nộp lại được cho tới khi được chấm.</span>}
+            <button className="btn" onClick={saveDraft} disabled={saving}>Lưu nháp</button>
+            <button className="btn primary" onClick={submit} disabled={saving}><CheckCircle2 className="icn sm" />{saving ? 'Đang nộp…' : sub && sub.submitted_at ? 'Nộp lại' : 'Nộp bài'}</button>
+            <span className="small muted">Lưu nháp giữ bài làm dở — không mất khi thoát trang.</span>
           </div>
-          {msg && <div className="small" style={{ color: '#b91c1c', marginTop: 8 }}>{msg}</div>}
+          {msg && <div className="small" style={{ color: msg.startsWith('Đã') ? '#15803d' : '#b91c1c', marginTop: 8 }}>{msg}</div>}
         </div>
       )}
       {!teacher && graded && (
@@ -228,12 +259,16 @@ function AssignmentDetail() {
           <div className="empty">Đã nộp — đã chấm. Xem chi tiết nhận xét ở trên.</div>
         </div>
       )}
-      {!teacher && sub && !graded && (
+      {!teacher && sub && sub.submitted_at && !graded && (
         <div className="card">
           <div className="badge amber" style={{ fontSize: 14, padding: '6px 14px' }}><Clock className="icn sm" />Đã nộp — đang chờ chấm</div>
         </div>
       )}
-      {!teacher && !sub && <ClipboardList className="hidden" />}
+      {!teacher && sub && !sub.submitted_at && !graded && (
+        <div className="card">
+          <div className="badge" style={{ fontSize: 14, padding: '6px 14px' }}>Bản nháp — bấm “Nộp bài” khi hoàn thành</div>
+        </div>
+      )}
     </div>
   )
 }

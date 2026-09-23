@@ -126,11 +126,15 @@ const mvpMethods = (call, qs) => ({
   getAssignment: (id) => call(`/assignments/${id}`),
   createAssignment: (payload) => call('/assignments', { method: 'POST', body: JSON.stringify(payload) }),
   submitAssignment: (id, answers) => call(`/assignments/${id}/submit`, { method: 'POST', body: JSON.stringify({ answers }) }),
+  draftAssignment: (id, answers) => call(`/assignments/${id}/draft`, { method: 'POST', body: JSON.stringify({ answers }) }),
   assignmentSubmissions: (id) => call(`/assignments/${id}/submissions`),
   gradeSubmission: (sid, payload) => call(`/submissions/${sid}/grade`, { method: 'PUT', body: JSON.stringify(payload) }),
   myResults: () => call('/me/results'),
   myProgress: () => call('/me/progress'),
   classOverview: () => call('/stats/class-overview'),
+  lessons: (topic_id) => call('/lessons' + qs({ topic_id })),
+  createLesson: (payload) => call('/lessons', { method: 'POST', body: JSON.stringify(payload) }),
+  completeLesson: (id, undo = false) => call(`/lessons/${id}/complete`, { method: 'POST', body: JSON.stringify({ undo }) }),
 })
 
 async function req(path, options = {}) {

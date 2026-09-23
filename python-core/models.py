@@ -81,3 +81,11 @@ class AssignmentSubmitIn(BaseModel):
 class GradeIn(BaseModel):
     score: float
     feedback: str = ""
+    question_scores: Optional[dict] = None
+class LessonCreateIn(BaseModel):
+    topic_id: str = ""
+    title: str = ""
+    content: str = ""
+    idx: int = 1
+class CompleteIn(BaseModel):
+    undo: bool = False

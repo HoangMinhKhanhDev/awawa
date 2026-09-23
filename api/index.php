@@ -578,6 +578,13 @@ function is_role_teacher($me) {
     return $me && (($me['role'] ?? 'student') === 'teacher');
 }
 
+function sub_status($sub) {
+    if (!$sub) return 'todo';
+    if ($sub['score'] !== null) return 'graded';
+    if ($sub['submitted_at'] !== null && $sub['submitted_at'] !== '') return 'submitted';
+    return 'draft';
+}
+
 // ---------------- CLASSES ----------------
 if ($path === '/classes' && $method === 'GET') {
     $me = require_me();
@@ -640,7 +647,7 @@ if ($path === '/assignments' && $method === 'GET') {
     foreach ($rows as $r) {
         $sub = q_one('SELECT id, score, feedback, submitted_at FROM submissions WHERE assignment_id=? AND student_id=?', array($r['id'], $me['id']));
         $r['my_submission'] = $sub ? $sub : null;
-        $r['status'] = $sub ? (($sub['score'] !== null) ? 'graded' : 'submitted') : 'todo';
+        $r['status'] = sub_status($sub);
         $out[] = $r;
     }
     j($out);
@@ -668,8 +675,10 @@ if ($path === '/assignments' && $method === 'POST') {
         $content = trim(is_string($q) ? $q : ($q['content'] ?? ''));
         if ($content === '') continue;
         $ans = is_string($q) ? '' : trim($q['answer'] ?? '');
-        db()->prepare('INSERT INTO assign_questions (assignment_id, idx, content, answer) VALUES (?,?,?,?)')
-            ->execute(array($aid, $i + 1, mb_substr($content, 0, 4000), mb_substr($ans, 0, 4000)));
+        $pts = is_string($q) ? 1 : (float)($q['points'] ?? 1);
+        if ($pts <= 0) $pts = 1;
+        db()->prepare('INSERT INTO assign_questions (assignment_id, idx, content, answer, points) VALUES (?,?,?,?,?)')
+            ->execute(array($aid, $i + 1, mb_substr($content, 0, 4000), mb_substr($ans, 0, 4000), $pts));
         $n++;
     }
     if ($n === 0) jerr('Cần ít nhất 1 câu hỏi.');
@@ -684,11 +693,12 @@ if (preg_match('#^/assignments/(\d+)$#', $path, $m)) {
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
     $teacher = is_role_teacher($me);
     if (!$teacher && !in_array((int)$a['class_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
-    $qs = q_all('SELECT id, idx, content' . ($teacher ? ', answer' : '') . ' FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
+    $qs = q_all('SELECT id, idx, content, points' . ($teacher ? ', answer' : '') . ' FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
     $a['questions'] = $qs;
     if (!$teacher) {
-        $sub = q_one('SELECT id, answer, score, feedback, submitted_at, graded_at FROM submissions WHERE assignment_id=? AND student_id=?', array($aid, $me['id']));
+        $sub = q_one('SELECT id, answer, score, feedback, submitted_at, graded_at, question_scores FROM submissions WHERE assignment_id=? AND student_id=?', array($aid, $me['id']));
         $a['my_submission'] = $sub ? $sub : null;
+        $a['status'] = sub_status($sub);
     }
     j($a);
 }
@@ -712,14 +722,45 @@ if (preg_match('#^/assignments/(\d+)/submit$#', $path, $m)) {
     }
     $payload = json_encode($map, JSON_UNESCAPED_UNICODE);
     if ($existing) {
-        db()->prepare('UPDATE submissions SET answer=?, submitted_at=NOW() WHERE id=?')->execute(array($payload, $existing['id']));
+        db()->prepare('UPDATE submissions SET answer=?, submitted_at=NOW(), question_scores=NULL, score=NULL, feedback=NULL, graded_at=NULL WHERE id=?')->execute(array($payload, $existing['id']));
         $sid = (int)$existing['id'];
     } else {
-        db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer) VALUES (?,?,?)')
+        db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, submitted_at) VALUES (?,?,?,NOW())')
             ->execute(array($aid, $me['id'], $payload));
         $sid = (int)db()->lastInsertId();
     }
     j(array('id' => $sid, 'status' => 'submitted'));
+}
+
+// Luu nhap: luu cau tra loi ma khong nop (submitted_at van NULL)
+if (preg_match('#^/assignments/(\d+)/draft$#', $path, $m)) {
+    if ($method !== 'POST') jerr('Không hỗ trợ.', 405);
+    $me = require_me();
+    if (is_role_teacher($me)) jerr('Giáo viên không làm bài.', 400);
+    $aid = (int)$m[1];
+    $a = q_one('SELECT * FROM assignments WHERE id=?', array($aid));
+    if (!$a) jerr('Không tìm thấy bài tập.', 404);
+    if (!in_array((int)$a['class_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
+    $existing = q_one('SELECT id, score FROM submissions WHERE assignment_id=? AND student_id=?', array($aid, $me['id']));
+    if ($existing && $existing['score'] !== null) jerr('Bài đã chấm, không sửa được.', 400);
+    $b = body();
+    $answers = is_array($b['answers'] ?? null) ? $b['answers'] : array();
+    $map = array();
+    foreach ($answers as $x) {
+        $idx = (int)($x['idx'] ?? 0);
+        if ($idx > 0) $map[$idx] = mb_substr(trim($x['text'] ?? ''), 0, 4000);
+    }
+    $payload = json_encode($map, JSON_UNESCAPED_UNICODE);
+    if ($existing) {
+        // khong dong thoi nop: neu chua nop thi van la draft
+        db()->prepare('UPDATE submissions SET answer=? WHERE id=?')->execute(array($payload, $existing['id']));
+        $sid = (int)$existing['id'];
+    } else {
+        db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, submitted_at) VALUES (?,?,?,NULL)')
+            ->execute(array($aid, $me['id'], $payload));
+        $sid = (int)db()->lastInsertId();
+    }
+    j(array('id' => $sid, 'status' => 'draft'));
 }
 
 if (preg_match('#^/assignments/(\d+)/submissions$#', $path, $m)) {
@@ -729,21 +770,22 @@ if (preg_match('#^/assignments/(\d+)/submissions$#', $path, $m)) {
     $aid = (int)$m[1];
     $a = q_one('SELECT * FROM assignments WHERE id=?', array($aid));
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
-    $rows = q_all('SELECT s.id sid, s.name, s.class_name, sub.id sub_id, sub.answer, sub.score, sub.feedback, sub.submitted_at, sub.graded_at
+    $rows = q_all('SELECT s.id sid, s.name, s.class_name, sub.id sub_id, sub.answer, sub.score, sub.feedback, sub.submitted_at, sub.graded_at, sub.question_scores
         FROM class_members cm JOIN students s ON s.id=cm.user_id
         LEFT JOIN submissions sub ON sub.assignment_id=? AND sub.student_id=s.id
         WHERE cm.class_id=? ORDER BY s.name', array($aid, $a['class_id']));
-    $qs = q_all('SELECT idx, content, answer FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
+    $qs = q_all('SELECT idx, content, answer, points FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
     $out = array();
     foreach ($rows as $r) {
         $ans = json_decode($r['answer'] ?? 'null', true);
+        $qscores = json_decode($r['question_scores'] ?? 'null', true);
         $out[] = array(
             'submission_id' => $r['sub_id'] !== null ? (int)$r['sub_id'] : null,
             'student_id' => (int)$r['sid'], 'name' => $r['name'], 'class_name' => $r['class_name'],
             'score' => $r['score'] !== null ? (float)$r['score'] : null,
             'feedback' => $r['feedback'], 'submitted_at' => $r['submitted_at'],
-            'graded_at' => $r['graded_at'],
-            'status' => $r['sub_id'] === null ? 'todo' : ($r['score'] !== null ? 'graded' : 'submitted'),
+            'graded_at' => $r['graded_at'], 'question_scores' => $qscores,
+            'status' => sub_status($r['sub_id'] === null ? null : $r),
             'answers' => $ans,
         );
     }
@@ -761,8 +803,10 @@ if (preg_match('#^/submissions/(\d+)/grade$#', $path, $m)) {
     $score = $b['score'] ?? null;
     if ($score === null || $score === '') jerr('Thiếu điểm.');
     $score = max(0, min(10, (float)$score));
-    db()->prepare('UPDATE submissions SET score=?, feedback=?, graded_at=NOW() WHERE id=?')
-        ->execute(array($score, mb_substr(trim($b['feedback'] ?? ''), 0, 1000), $sid));
+    $qsc = is_array($b['question_scores'] ?? null) ? $b['question_scores'] : null;
+    $qscJson = $qsc !== null ? json_encode($qsc, JSON_UNESCAPED_UNICODE) : null;
+    db()->prepare('UPDATE submissions SET score=?, feedback=?, question_scores=?, graded_at=NOW() WHERE id=?')
+        ->execute(array($score, mb_substr(trim($b['feedback'] ?? ''), 0, 1000), $qscJson, $sid));
     j(array('ok' => true, 'score' => $score));
 }
 
@@ -775,7 +819,7 @@ if ($path === '/me/results' && $method === 'GET') {
         FROM submissions sub
         JOIN assignments a ON a.id=sub.assignment_id
         LEFT JOIN topics t ON t.id=a.topic_id
-        WHERE sub.student_id=? ORDER BY sub.submitted_at DESC LIMIT 100', array($me['id']));
+        WHERE sub.student_id=? ORDER BY COALESCE(sub.submitted_at, sub.graded_at, sub.id) DESC LIMIT 100', array($me['id']));
     $ids = my_class_ids($me['id']);
     $assigned = 0;
     if ($ids) {
@@ -794,11 +838,11 @@ if ($path === '/me/progress' && $method === 'GET') {
         $in = implode(',', array_fill(0, count($ids), '?'));
         $assigned = (int)q_one("SELECT COUNT(*) c FROM assignments WHERE class_id IN ($in)", $ids)['c'];
     }
-    $subs = q_all('SELECT sub.score, a.topic_id, t.name topic_name FROM submissions sub JOIN assignments a ON a.id=sub.assignment_id LEFT JOIN topics t ON t.id=a.topic_id WHERE sub.student_id=?', array($me['id']));
+    $subs = q_all('SELECT sub.score, sub.submitted_at, a.topic_id, t.name topic_name FROM submissions sub JOIN assignments a ON a.id=sub.assignment_id LEFT JOIN topics t ON t.id=a.topic_id WHERE sub.student_id=?', array($me['id']));
     $completed = 0; $graded = 0; $sum = 0.0;
     $topicSum = array();
     foreach ($subs as $s) {
-        $completed++;
+        if ($s['submitted_at'] !== null && $s['submitted_at'] !== '') $completed++;
         if ($s['score'] !== null) {
             $graded++;
             $sum += (float)$s['score'];
@@ -812,14 +856,91 @@ if ($path === '/me/progress' && $method === 'GET') {
     foreach ($topicSum as $t) $byTopic[] = array('topic' => $t['topic'], 'avg' => $t['n'] ? round($t['sum'] / $t['n'], 1) : 0, 'n' => $t['n']);
     usort($byTopic, function ($x, $y) { return $y['avg'] <=> $x['avg']; });
     $latest = q_one('SELECT score FROM submissions WHERE student_id=? AND score IS NOT NULL ORDER BY graded_at DESC LIMIT 1', array($me['id']));
+    $latestTitle = null;
+    if ($latest) {
+        $ltRow = q_one('SELECT a.title FROM submissions sub JOIN assignments a ON a.id=sub.assignment_id WHERE sub.student_id=? AND sub.score IS NOT NULL ORDER BY sub.graded_at DESC LIMIT 1', array($me['id']));
+        $latestTitle = $ltRow['title'] ?? null;
+    }
+
+    // Bai hoc: tong + da hoan thanh + tien do theo chuyen de
+    $lessonsTotal = (int)q_one('SELECT COUNT(*) c FROM lessons')['c'];
+    $lessonsDone = (int)q_one('SELECT COUNT(*) c FROM lesson_completions WHERE student_id=?', array($me['id']))['c'];
+    $topicRows = q_all('SELECT t.id, t.name,
+        (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id) lt,
+        (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id) ld
+        FROM topics t WHERE (SELECT COUNT(*) FROM lessons l2 WHERE l2.topic_id=t.id) > 0', array($me['id'], $me['id']));
+    $topicsDone = 0; $topicsWithLessons = 0;
+    $currentTopic = null;
+    foreach ($topicRows as $t) {
+        $topicsWithLessons++;
+        if ((int)$t['lt'] === (int)$t['ld']) $topicsDone++;
+        elseif ($currentTopic === null && (int)$t['ld'] < (int)$t['lt']) {
+            $currentTopic = array('id' => $t['id'], 'name' => $t['name'], 'done' => (int)$t['ld'], 'total' => (int)$t['lt']);
+        }
+    }
+    $lessonRatio = $lessonsTotal ? round($lessonsDone / $lessonsTotal, 3) : 0;
+    $assignRatio = $assigned ? round($completed / $assigned, 3) : 0;
+    // 72% cuoi cung: tron lesson + assignment (neu chua co bai hoc chi dung assignment)
+    $overall = $lessonsTotal > 0 ? round(0.5 * $lessonRatio + 0.5 * $assignRatio, 3) : $assignRatio;
+
     j(array(
         'assigned' => $assigned,
         'completed' => $completed,
         'ratio' => $assigned ? round($completed / $assigned, 3) : 0,
+        'overall_ratio' => $overall,
         'avg_score' => $graded ? round($sum / $graded, 1) : null,
         'latest_score' => $latest ? (float)$latest['score'] : null,
+        'latest_title' => $latestTitle,
         'by_topic' => $byTopic,
+        'lessons_total' => $lessonsTotal,
+        'lessons_done' => $lessonsDone,
+        'lessons_ratio' => $lessonRatio,
+        'topics_done' => $topicsDone,
+        'topics_total' => $topicsWithLessons,
+        'current_topic' => $currentTopic,
     ));
+}
+
+// ---------------- LESSONS ----------------
+if ($path === '/lessons' && $method === 'GET') {
+    $me = require_me();
+    $topicId = trim($_GET['topic_id'] ?? '');
+    if ($topicId === '') jerr('Thiếu topic_id.');
+    $rows = q_all('SELECT l.id, l.topic_id, l.title, l.content, l.idx, t.name topic_name,
+        (SELECT 1 FROM lesson_completions lc WHERE lc.lesson_id=l.id AND lc.student_id=?) completed
+        FROM lessons l JOIN topics t ON t.id=l.topic_id WHERE l.topic_id=? ORDER BY l.idx', array($me['id'], $topicId));
+    foreach ($rows as &$r) $r['completed'] = $r['completed'] ? true : false;
+    unset($r);
+    j($rows);
+}
+
+if ($path === '/lessons' && $method === 'POST') {
+    $me = require_me();
+    if (!is_role_teacher($me)) jerr('Khu vực giáo viên.', 403);
+    $b = body();
+    $topicId = trim($b['topic_id'] ?? '');
+    $title = mb_substr(trim($b['title'] ?? ''), 0, 255);
+    if ($topicId === '' || $title === '') jerr('Thiếu chủ đề hoặc tiêu đề.');
+    if (!q_one('SELECT 1 FROM topics WHERE id=?', array($topicId))) jerr('Chuyên đề không tồn tại.');
+    $idx = max(1, (int)($b['idx'] ?? 1));
+    db()->prepare('INSERT INTO lessons (topic_id, title, content, idx) VALUES (?,?,?,?)')
+        ->execute(array($topicId, $title, (string)($b['content'] ?? ''), $idx));
+    j(array('id' => (int)db()->lastInsertId()));
+}
+
+if (preg_match('#^/lessons/(\d+)/complete$#', $path, $m)) {
+    if ($method !== 'POST') jerr('Không hỗ trợ.', 405);
+    $me = require_me();
+    if (is_role_teacher($me)) jerr('Giáo viên không đánh dấu bài học.', 400);
+    $lid = (int)$m[1];
+    if (!q_one('SELECT 1 FROM lessons WHERE id=?', array($lid))) jerr('Không tìm thấy bài học.', 404);
+    $b = body();
+    if (!empty($b['undo'])) {
+        db()->prepare('DELETE FROM lesson_completions WHERE student_id=? AND lesson_id=?')->execute(array($me['id'], $lid));
+        j(array('completed' => false));
+    }
+    db()->prepare('INSERT IGNORE INTO lesson_completions (student_id, lesson_id) VALUES (?,?)')->execute(array($me['id'], $lid));
+    j(array('completed' => true));
 }
 
 // ---------------- TEACHER HOME OVERVIEW ----------------
@@ -828,8 +949,38 @@ if ($path === '/stats/class-overview' && $method === 'GET') {
     if (!is_role_teacher($me)) jerr('Khu vực giáo viên.', 403);
     $students = (int)q_one("SELECT COUNT(*) c FROM students WHERE COALESCE(role,'student')<>'teacher'")['c'];
     $active = (int)q_one('SELECT COUNT(*) c FROM assignments WHERE deadline IS NULL OR deadline >= CURDATE()')['c'];
-    $ungraded = (int)q_one('SELECT COUNT(*) c FROM submissions WHERE score IS NULL')['c'];
-    j(array('students' => $students, 'active_assignments' => $active, 'ungraded' => $ungraded));
+    $ungraded = (int)q_one('SELECT COUNT(*) c FROM submissions WHERE score IS NULL AND submitted_at IS NOT NULL')['c'];
+
+    // Bai gan day + so da nop/chua nop
+    $recent = q_all('SELECT a.id, a.title, a.deadline, a.topic_id, c.name class_name, t.name topic_name,
+        (SELECT COUNT(*) FROM class_members cm WHERE cm.class_id=a.class_id) total,
+        (SELECT COUNT(*) FROM submissions s WHERE s.assignment_id=a.id AND s.submitted_at IS NOT NULL) submitted
+        FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id
+        ORDER BY a.created_at DESC LIMIT 5');
+
+    // Tien do lop theo chuyen de: da nop / (so bai cua CD * so hs lop do)
+    $tpRows = q_all('SELECT t.id tid, t.name tname, a.class_id,
+        COUNT(DISTINCT a.id) an,
+        (SELECT COUNT(*) FROM submissions s WHERE s.assignment_id=a.id AND s.submitted_at IS NOT NULL) done
+        FROM topics t
+        JOIN assignments a ON a.topic_id=t.id
+        GROUP BY t.id, t.name, a.class_id ORDER BY t.name');
+    $topicProgress = array();
+    foreach ($tpRows as $t) {
+        $members = (int)q_one('SELECT COUNT(*) c FROM class_members WHERE class_id=?', array($t['class_id']))['c'];
+        $expected = max(1, (int)$t['an'] * $members);
+        // done = tong da nop tren cac bai cua CD nay (tinh lai chinh xac)
+        $done = (int)q_one('SELECT COUNT(*) c FROM submissions s JOIN assignments a2 ON a2.id=s.assignment_id WHERE a2.topic_id=? AND s.submitted_at IS NOT NULL', array($t['tid']))['c'];
+        $topicProgress[] = array('topic' => $t['tname'], 'pct' => min(100, (int)round(100 * $done / $expected)));
+    }
+
+    j(array(
+        'students' => $students,
+        'active_assignments' => $active,
+        'ungraded' => $ungraded,
+        'recent_assignments' => $recent,
+        'topic_progress' => $topicProgress,
+    ));
 }
 
 jerr('Không tìm thấy API: ' . $path, 404);

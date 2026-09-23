@@ -42,7 +42,7 @@ export default function Results() {
     )
   }
 
-  const pct = Math.round((progress?.ratio || 0) * 100)
+  const pct = Math.round((progress?.overall_ratio ?? progress?.ratio ?? 0) * 100)
   return (
     <div className="grid">
       <div className="card">
@@ -51,11 +51,28 @@ export default function Results() {
         <div className="kpi-strip" style={{ marginTop: 12 }}>
           <div className="kpi-cell"><div className="muted small">Bài đã giao</div><div className="kpi">{progress?.assigned ?? 0}</div></div>
           <div className="kpi-cell"><div className="muted small">Đã hoàn thành</div><div className="kpi">{progress?.completed ?? 0}</div></div>
-          <div className="kpi-cell"><div className="muted small">Tỷ lệ hoàn thành</div><div className="kpi">{pct}%</div></div>
+          <div className="kpi-cell"><div className="muted small">Tỷ lệ hoàn thành</div><div className="kpi">{Math.round((progress?.ratio || 0) * 100)}%</div></div>
           <div className="kpi-cell"><div className="muted small">Điểm trung bình</div><div className="kpi">{progress?.avg_score ?? '—'}</div></div>
         </div>
         <div className="progress" style={{ marginTop: 12 }}><div style={{ width: `${pct}%` }} /></div>
+        <div className="small muted" style={{ marginTop: 6 }}>
+          Tiến độ tổng {pct}%
+          {progress?.topics_total ? ` • ${progress.topics_done}/${progress.topics_total} chuyên đề hoàn thành` : ''}
+          {progress?.lessons_total ? ` • ${progress.lessons_done}/${progress.lessons_total} bài học` : ''}
+        </div>
       </div>
+
+      {progress?.lessons_total > 0 && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Bài học</h3>
+          <div className="row" style={{ justifyContent: 'space-between', fontSize: 14 }}>
+            <span>Đã hoàn thành</span><b>{progress.lessons_done} / {progress.lessons_total}</b>
+          </div>
+          <div className="progress" style={{ marginTop: 6 }}>
+            <div style={{ width: `${Math.round((progress.lessons_ratio || 0) * 100)}%` }} />
+          </div>
+        </div>
+      )}
 
       {progress?.by_topic?.length > 0 && (
         <div className="card">

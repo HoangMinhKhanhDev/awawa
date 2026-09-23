@@ -2,6 +2,7 @@ import { NavLink, Routes, Route, Navigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { House, BookOpen, ClipboardList, ChartLine, CircleUserRound, GraduationCap, Timer, ShieldCheck, Users, PenLine, Table2, Sprout, TabletSmartphone } from 'lucide-react'
 import Home from './pages/Home.jsx'
+import Login from './pages/Login.jsx'
 import Topics from './pages/Topics.jsx'
 import Assignments from './pages/Assignments.jsx'
 import Results from './pages/Results.jsx'
@@ -112,6 +113,7 @@ export default function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/login" element={<Login />} />
           <Route path="/topics" element={<Topics />} />
           <Route path="/topics/:subjectId" element={<Topics />} />
           <Route path="/assignments" element={<Assignments />} />
