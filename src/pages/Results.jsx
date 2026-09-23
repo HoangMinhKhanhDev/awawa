@@ -5,7 +5,7 @@ import { api, getSession } from '../api.js'
 
 export default function Results() {
   const s = getSession()
-  const isTeacher = (s.student?.role || 'student') === 'teacher'
+  const isTeacher = (s.student?.role || 'student') === 'teacher' || (s.student?.role || 'student') === 'admin'
   const [progress, setProgress] = useState(null)
   const [results, setResults] = useState([])
   const [msg, setMsg] = useState('')

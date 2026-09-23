@@ -16,7 +16,8 @@ export default function Topics() {
   const [assignments, setAssignments] = useState([])
   const [tab, setTab] = useState('lesson')
   const nav = useNavigate()
-  const teacher = (getSession().student?.role || 'student') === 'teacher'
+  const rawRole = getSession().student?.role || 'student'
+  const teacher = rawRole === 'teacher' || rawRole === 'admin'
 
   useEffect(() => { api.subjects().then(setSubjects).catch(() => {}) }, [])
 

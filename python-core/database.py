@@ -120,6 +120,39 @@ CREATE TABLE IF NOT EXISTS lesson_completions (
   completed_at TEXT,
   PRIMARY KEY (student_id, lesson_id)
 );
+CREATE TABLE IF NOT EXISTS school_years (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  start_date TEXT DEFAULT '',
+  end_date TEXT DEFAULT '',
+  is_current INTEGER DEFAULT 0,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS grades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  school_year_id INTEGER,
+  name TEXT NOT NULL,
+  code TEXT DEFAULT '',
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS teams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  school_year_id INTEGER,
+  grade_id INTEGER,
+  subject_id TEXT,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS team_members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  member_role TEXT DEFAULT 'student',
+  joined_at TEXT,
+  left_at TEXT,
+  UNIQUE (team_id, user_id, member_role)
+);
 """
 
 
@@ -142,6 +175,7 @@ STUDENT_MIGRATIONS = [
     ("email", "TEXT"),
     ("password_hash", "TEXT"),
     ("role", "TEXT DEFAULT 'student'"),
+    ("active", "INTEGER DEFAULT 1"),
 ]
 
 TOPIC_MIGRATIONS = [
@@ -192,6 +226,28 @@ class DB:
         self.conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
           token_hash TEXT PRIMARY KEY, student_id INTEGER NOT NULL,
           expires_at TEXT NOT NULL, created_at TEXT)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS school_years (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+          start_date TEXT DEFAULT '', end_date TEXT DEFAULT '',
+          is_current INTEGER DEFAULT 0, created_at TEXT)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS grades (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, school_year_id INTEGER,
+          name TEXT NOT NULL, code TEXT DEFAULT '', created_at TEXT)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS teams (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, school_year_id INTEGER,
+          grade_id INTEGER, subject_id TEXT, name TEXT NOT NULL,
+          description TEXT DEFAULT '', created_at TEXT)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS team_members (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, team_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL, member_role TEXT DEFAULT 'student',
+          joined_at TEXT, left_at TEXT,
+          UNIQUE (team_id, user_id, member_role))""")
+        # Đảm bảo cột active trên DB cũ (PRAGMA ALTER đã chạy ở trên, thêm guard lần 2)
+        scols2 = {r[1] for r in self.conn.execute("PRAGMA table_info(students)").fetchall()}
+        if "active" not in scols2:
+            self.conn.execute("ALTER TABLE students ADD COLUMN active INTEGER DEFAULT 1")
+            self.conn.execute("UPDATE students SET active=1 WHERE active IS NULL")
+        self.conn.commit()
         if self.count("classes") == 0:
             self.conn.execute("INSERT INTO classes (name, join_code) VALUES ('Lớp bồi dưỡng HSG', 'HSG2026')")
         self.conn.commit()
@@ -199,9 +255,40 @@ class DB:
             seed(self)
         else:
             ensure_cn_seed(self)
+        self.ensure_school_defaults()
 
     def count(self, table):
         return self.conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+
+    def ensure_school_defaults(self):
+        """Seed nhẹ cấu trúc nhà trường nếu trống — idempotent."""
+        from datetime import datetime
+        now = datetime.now().isoformat(timespec="seconds")
+        if self.count("school_years") == 0:
+            self.conn.execute(
+                "INSERT INTO school_years (name, start_date, end_date, is_current, created_at) VALUES (?,?,?,?,?)",
+                ("2026-2027", "2026-09-01", "2027-05-31", 1, now))
+        else:
+            cur = self.conn.execute(
+                "SELECT COUNT(*) c FROM school_years WHERE is_current=1").fetchone()["c"]
+            if cur == 0:
+                first = self.conn.execute("SELECT id FROM school_years ORDER BY id LIMIT 1").fetchone()
+                if first:
+                    self.conn.execute("UPDATE school_years SET is_current=1 WHERE id=?", (first["id"],))
+        if self.count("grades") == 0:
+            yid = self.conn.execute("SELECT id FROM school_years WHERE is_current=1").fetchone()["id"]
+            for name, code in (("Khối 10", "10"), ("Khối 11", "11"), ("Khối 12", "12")):
+                self.conn.execute(
+                    "INSERT INTO grades (school_year_id, name, code, created_at) VALUES (?,?,?,?)",
+                    (yid, name, code, now))
+        if self.count("teams") == 0:
+            yid = self.conn.execute("SELECT id FROM school_years WHERE is_current=1").fetchone()["id"]
+            for name, sid in (("Nông nghiệp", "cn-nong"), ("Chăn nuôi", "cn-chan"),
+                              ("Lâm nghiệp – Thủy sản", "cn-lamthuy"), ("HSG Vật lý", "ly")):
+                self.conn.execute(
+                    "INSERT INTO teams (school_year_id, subject_id, name, created_at) VALUES (?,?,?,?)",
+                    (yid, sid, name, now))
+        self.conn.commit()
 
     def q(self, sql, params=()):
         return self.conn.execute(sql, params).fetchall()

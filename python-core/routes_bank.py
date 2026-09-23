@@ -1,11 +1,12 @@
 import json
+from datetime import datetime
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from typing import Optional
 
 from auth import require_teacher
 from deps import get_db
-from files import extract_file_text
+from files import extract_file_text, parse_text_to_drafts
 from models import BulkIn, PreviewIn, QuestionIn, TopicIn
 from serializers import row_to_q
 

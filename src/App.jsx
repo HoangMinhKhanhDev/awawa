@@ -63,11 +63,11 @@ const teacherTabs = [
   { to: '/assignments', label: 'Bài tập', long: 'Bài tập', icon: ClipboardList },
   { to: '/grading', label: 'Chấm bài', long: 'Chấm bài', icon: PenLine },
   { to: '/progress', label: 'Thống kê', long: 'Thống kê', icon: Table2 },
+  { to: '/profile', label: 'Cá nhân', long: 'Hồ sơ', icon: CircleUserRound },
 ]
-// Mobile tối đa 5: GV gộp Học sinh + Thống kê vào Tổng quan menu? Spec mobile 5 mục — GV mượn layout HS, đổi nhãn
+// Mobile tối đa 5 mục: GV bỏ Chuyên đề + Thống kê (vào từ Tổng quan / sidebar desktop)
 const studentMobile = studentTabs
 const teacherMobile = teacherTabs.filter((t) => t.to !== '/topics' && t.to !== '/progress')
-  .concat([{ to: '/progress', label: 'Thống kê', long: 'Thống kê', icon: Table2 }])
 
 export default function App() {
   const backend = useBackend()
@@ -81,8 +81,9 @@ export default function App() {
 
   const s = getSession()
   const role = s.student?.role || 'student'
-  const desktopTabs = role === 'teacher' ? teacherTabs : studentTabs
-  const mobileTabs = role === 'teacher' ? teacherMobile : studentMobile
+  const isStaff = role === 'teacher' || role === 'admin'
+  const desktopTabs = isStaff ? teacherTabs : studentTabs
+  const mobileTabs = isStaff ? teacherMobile : studentMobile
 
   return (
     <div className="layout">
@@ -95,7 +96,8 @@ export default function App() {
         <div className="nav-extra">
           <NavLink className="navlink small" to="/practice"><GraduationCap className="icn sm" />Luyện nhanh</NavLink>
           <NavLink className="navlink small" to="/exam"><Timer className="icn sm" />Thi thử bấm giờ</NavLink>
-          {role === 'teacher' && <NavLink className="navlink small" to="/manage/bank"><ShieldCheck className="icn sm" />Ngân hàng đề</NavLink>}
+          {isStaff && <NavLink className="navlink small" to="/manage/bank"><ShieldCheck className="icn sm" />Ngân hàng đề</NavLink>}
+          {role === 'admin' && <NavLink className="navlink small" to="/manage/school"><ShieldCheck className="icn sm" />Nhà trường</NavLink>}
         </div>
         <div className="sidefoot">
           <div><span className={`status-dot ${okClass(backend.ok)}`} />

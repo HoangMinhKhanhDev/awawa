@@ -20,6 +20,28 @@ class StudentIn(BaseModel):
     class_name: str = ""
     team: str = ""
     note: str = ""
+    team_id: Optional[int] = None
+    active: Optional[int] = None
+class SchoolYearIn(BaseModel):
+    name: str
+    start_date: str = ""
+    end_date: str = ""
+    is_current: int = 0
+class GradeIn(BaseModel):
+    school_year_id: Optional[int] = None
+    name: str
+    code: str = ""
+class TeamIn(BaseModel):
+    school_year_id: Optional[int] = None
+    grade_id: Optional[int] = None
+    subject_id: Optional[str] = None
+    name: str
+    description: str = ""
+class TeamMemberIn(BaseModel):
+    user_id: int
+    member_role: str = "student"
+class ActiveIn(BaseModel):
+    active: int
 class TopicIn(BaseModel):
     id: Optional[str] = None
     subject_id: str

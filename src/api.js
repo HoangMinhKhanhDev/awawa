@@ -113,6 +113,27 @@ const authMethods = (call) => ({
     return r
   },
   resetStudentPassword: (id, password) => call(`/students/${id}/reset-password`, { method: 'PUT', body: JSON.stringify({ password }) }),
+  setStudentActive: (id, active) => call(`/students/${id}/active`, { method: 'PUT', body: JSON.stringify({ active: active ? 1 : 0 }) }),
+})
+
+// Cấu trúc nhà trường (Phase 1a) — admin: CRUD; staff: đọc
+const schoolMethods = (call, qs) => ({
+  schoolYears: () => call('/school-years'),
+  createSchoolYear: (payload) => call('/school-years', { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchoolYear: (id, payload) => call(`/school-years/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteSchoolYear: (id) => call(`/school-years/${id}`, { method: 'DELETE' }),
+  grades: (params = {}) => call('/grades' + qs(params)),
+  createGrade: (payload) => call('/grades', { method: 'POST', body: JSON.stringify(payload) }),
+  updateGrade: (id, payload) => call(`/grades/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteGrade: (id) => call(`/grades/${id}`, { method: 'DELETE' }),
+  teams: (params = {}) => call('/teams' + qs(params)),
+  myTeams: () => call('/me/teams'),
+  createTeam: (payload) => call('/teams', { method: 'POST', body: JSON.stringify(payload) }),
+  updateTeam: (id, payload) => call(`/teams/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteTeam: (id) => call(`/teams/${id}`, { method: 'DELETE' }),
+  teamMembers: (id) => call(`/teams/${id}/members`),
+  addTeamMember: (id, payload) => call(`/teams/${id}/members`, { method: 'POST', body: JSON.stringify(payload) }),
+  removeTeamMember: (id, uid) => call(`/teams/${id}/members/${uid}`, { method: 'DELETE' }),
 })
 
 // MVP: lop, bai tap, cham diem, tien do
@@ -245,6 +266,12 @@ const legacyApi = {
     const s = q.toString()
     return s ? `?${s}` : ''
   }),
+  ...schoolMethods((p, o) => req('/api' + p, o), (params = {}) => {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null) q.append(k, v) })
+    const s = q.toString()
+    return s ? `?${s}` : ''
+  }),
   previewImportText: (text) => req('/api/import/preview-text', { method: 'POST', body: JSON.stringify({ text }) }),
   uploadImport: async (file) => {
     const base = await getBackendUrlLegacy()
@@ -308,8 +335,10 @@ const phpApi = {
   updateStudent: (id, payload) => preq(`/students/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteStudent: (id) => preq(`/students/${id}`, { method: 'DELETE' }),
   leaderboard: (params = {}) => preq(`/stats/leaderboard${pquery(params)}`),
+  setStudentActive: (id, active) => preq(`/students/${id}/active`, { method: 'PUT', body: JSON.stringify({ active: active ? 1 : 0 }) }),
   ...authMethods(preq),
   ...mvpMethods(preq, pquery),
+  ...schoolMethods(preq, pquery),
   previewImportText: async (text) => ({ text, drafts: parseTextToDrafts(text) }),
   uploadImport: async (file) => {
     const text = await extractFileText(file)

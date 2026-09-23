@@ -27,7 +27,7 @@ def me_or_401(request: Request) -> dict:
 
 
 def is_teacher(me) -> bool:
-    return bool(me and (me.get("role") or "student") == "teacher")
+    return bool(me and (me.get("role") or "student") in ("teacher", "admin"))
 
 
 def sub_status(sub) -> str:
@@ -484,7 +484,7 @@ def complete_lesson(lid: int, payload: CompleteIn, request: Request):
 def class_overview(request: Request):
     require_teacher(request)
     db = get_db()
-    students = db.q1("SELECT COUNT(*) c FROM students WHERE COALESCE(role,'student')<>'teacher'")["c"]
+    students = db.q1("SELECT COUNT(*) c FROM students WHERE COALESCE(role,'student') NOT IN ('teacher','admin')")["c"]
     active = db.q1("SELECT COUNT(*) c FROM assignments WHERE deadline IS NULL OR deadline >= date('now')")["c"]
     ungraded = db.q1("SELECT COUNT(*) c FROM submissions WHERE score IS NULL AND submitted_at IS NOT NULL")["c"]
     recent = [dict(r) for r in db.q(

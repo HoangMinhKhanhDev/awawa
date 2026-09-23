@@ -16,3 +16,5 @@ api/local.php
 .env
 .env.local
 .env.hostinger
+*.zip
+docs/tmp/

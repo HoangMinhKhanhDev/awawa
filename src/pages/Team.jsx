@@ -1,53 +1,61 @@
 import { useEffect, useState } from 'react'
-import { api } from '../api.js'
-
-const TEAMS = [
-  { id: '', label: 'Tất cả đội' },
-  { id: 'Nông nghiệp', label: '🌾 Nông nghiệp' },
-  { id: 'Chăn nuôi', label: '🐄 Chăn nuôi' },
-  { id: 'Lâm nghiệp – Thủy sản', label: '🌲 Lâm – Thủy sản' },
-]
+import { api, getSession } from '../api.js'
 
 export default function Team() {
+  const me = getSession().student
+  const isAdmin = (me?.role || 'student') === 'admin'
+  const isStaff = isAdmin || (me?.role || 'student') === 'teacher'
   const [students, setStudents] = useState([])
   const [ranking, setRanking] = useState([])
   const [classes, setClasses] = useState([])
+  const [teams, setTeams] = useState([])
   const [teamFilter, setTeamFilter] = useState('')
   const [search, setSearch] = useState('')
-  const [form, setForm] = useState({ name: '', class_name: '', team: 'Nông nghiệp', note: '' })
+  const [statusFilter, setStatusFilter] = useState('')
+  const [form, setForm] = useState({ name: '', class_name: '', team: '', note: '', team_id: '' })
   const [editingId, setEditingId] = useState(null)
   const [loading, setLoading] = useState(false)
 
   const load = async () => {
     setLoading(true)
     try {
-      const [st, stats, cls] = await Promise.all([
-        api.students({ team: teamFilter || undefined, search: search || undefined }),
+      const teamQ = teamFilter || undefined
+      const [st, stats, cls, tms] = await Promise.all([
+        api.students({ team: teamQ, search: search || undefined, active: statusFilter === '' ? undefined : statusFilter }),
         api.stats(),
         api.classes().catch(() => []),
+        api.myTeams().catch(() => []),
       ])
       setStudents(st || [])
       setRanking(stats?.by_student || [])
       setClasses(cls || [])
+      setTeams(tms || [])
+      if (tms && tms.length && !teamFilter && !form.team) {
+        setForm((f) => ({ ...f, team: tms[0].name || '', team_id: tms[0].id }))
+      }
     } catch (e) {
       alert(e.message)
     }
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [])
-  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [teamFilter, search])
+  useEffect(() => { load() }, []) // eslint-disable-line
+  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [teamFilter, search, statusFilter]) // eslint-disable-line
 
   const resetForm = () => {
-    setForm({ name: '', class_name: '', team: 'Nông nghiệp', note: '' })
+    setForm({ name: '', class_name: '', team: teams[0]?.name || '', note: '', team_id: teams[0]?.id || '' })
     setEditingId(null)
   }
 
   const save = async () => {
     if (!form.name.trim()) return alert('Nhập tên học sinh')
     try {
-      if (editingId) await api.updateStudent(editingId, form)
-      else await api.createStudent(form)
+      const payload = {
+        ...form,
+        team_id: form.team_id ? Number(form.team_id) : undefined,
+      }
+      if (editingId) await api.updateStudent(editingId, payload)
+      else await api.createStudent(payload)
       resetForm()
       load()
     } catch (e) { alert(e.message) }
@@ -55,19 +63,38 @@ export default function Team() {
 
   const edit = (s) => {
     setEditingId(s.id)
-    setForm({ name: s.name || '', class_name: s.class_name || '', team: s.team || 'Nông nghiệp', note: s.note || '' })
+    const match = teams.find((t) => t.name === s.team)
+    setForm({
+      name: s.name || '', class_name: s.class_name || '', team: s.team || '',
+      note: s.note || '', team_id: match?.id || '',
+    })
     window.scrollTo(0, 0)
   }
 
+  const toggleActive = async (s) => {
+    if (!isAdmin) return
+    const next = s.active === 0 ? 1 : 0
+    const label = next ? `Mở khóa` : 'Khóa'
+    if (!confirm(`${label} tài khoản ${s.name}?`)) return
+    try {
+      await api.setStudentActive(s.id, next)
+      load()
+    } catch (e) { alert(e.message) }
+  }
+
   const rankOf = (name) => ranking.findIndex((r) => r.student_name === name)
+  const teamOptions = teams.length
+    ? [{ id: '', name: 'Tất cả đội' }, ...teams.map((t) => ({ id: String(t.id), name: t.name }))]
+    : [{ id: '', name: 'Tất cả đội' }]
 
   return (
     <div className="grid">
       <div className="card">
-        <h1 style={{ marginTop: 0 }}>Đội tuyển / Lớp học</h1>
+        <h1 style={{ marginTop: 0 }}>{isAdmin ? 'Tài khoản & đội tuyển' : 'Đội tuyển của bạn'}</h1>
         <div className="small muted">
-          Dành cho giáo viên: thêm học sinh, theo dõi lượt làm, đặt lại mật khẩu.
-          Học sinh tự vào lớp bằng mã bên dưới.
+          {isAdmin
+            ? 'Toàn trường: thêm HS, gán đội, khóa/mở tài khoản, đặt lại mật khẩu.'
+            : 'Chỉ hiển thị học sinh trong đội bạn phụ trách. Thêm HS sẽ vào đội của bạn.'}
         </div>
         {classes.length > 0 && (
           <div className="row" style={{ marginTop: 10 }}>
@@ -78,16 +105,28 @@ export default function Team() {
         )}
         <div className="row" style={{ marginTop: 10 }}>
           <select className="select" value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
-            {TEAMS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            {teamOptions.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
+          {isAdmin && (
+            <select className="select" style={{ maxWidth: 150 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="">Mọi trạng thái</option>
+              <option value="1">Đang mở</option>
+              <option value="0">Đã khóa</option>
+            </select>
+          )}
           <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="Tìm tên…" value={search} onChange={(e) => setSearch(e.target.value)} />
           <button className="btn primary" onClick={load} disabled={loading}>{loading ? 'Đang tải…' : 'Tải lại'}</button>
         </div>
+        {teams.length === 0 && isStaff && !isAdmin && (
+          <div className="small muted" style={{ marginTop: 8 }}>
+            Bạn chưa phụ trách đội nào — nhờ quản trị phân công ở mục Nhà trường.
+          </div>
+        )}
       </div>
 
       <div className="grid c2">
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>{editingId ? `Sửa HS #${editingId}` : 'Thêm học sinh vào đội'}</h3>
+          <h3 style={{ marginTop: 0 }}>{editingId ? `Sửa HS #${editingId}` : 'Thêm học sinh'}</h3>
           <label className="lbl">Họ tên *</label>
           <input className="input" placeholder="VD: Nguyễn Văn A" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <div className="grid c2" style={{ marginTop: 8 }}>
@@ -97,10 +136,12 @@ export default function Team() {
             </div>
             <div>
               <label className="lbl">Đội tuyển</label>
-              <select className="select" value={form.team} onChange={(e) => setForm({ ...form, team: e.target.value })}>
-                <option>Nông nghiệp</option>
-                <option>Chăn nuôi</option>
-                <option>Lâm nghiệp – Thủy sản</option>
+              <select className="select" value={form.team_id} onChange={(e) => {
+                const t = teams.find((x) => String(x.id) === e.target.value)
+                setForm({ ...form, team_id: e.target.value, team: t?.name || '' })
+              }}>
+                <option value="">— Chọn đội —</option>
+                {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
             </div>
           </div>
@@ -109,10 +150,6 @@ export default function Team() {
           <div className="row" style={{ marginTop: 10 }}>
             <button className="btn primary" onClick={save}>{editingId ? 'Lưu' : '+ Thêm'}</button>
             {editingId && <button className="btn" onClick={resetForm}>Hủy</button>}
-          </div>
-          <div className="small muted" style={{ marginTop: 8 }}>
-            Mẹo HSG Công nghệ: chia đội theo đúng 3 mạch đề — mỗi đội luyện sâu chuyên đề của mình,
-            thi thử chung để so sánh.
           </div>
         </div>
 
@@ -137,17 +174,31 @@ export default function Team() {
       </div>
 
       <div className="card">
-        <h3 style={{ marginTop: 0 }}>Danh sách đội ({students.length})</h3>
-        {students.length === 0 && !loading && <div className="muted small">Chưa có học sinh. Thêm ở khung trên.</div>}
+        <h3 style={{ marginTop: 0 }}>Danh sách ({students.length})</h3>
+        {students.length === 0 && !loading && (
+          <div className="muted small">
+            {isStaff && !isAdmin ? 'Chưa có học sinh trong đội của bạn — thêm ở khung trên.' : 'Chưa có học sinh.'}
+          </div>
+        )}
         <table className="tbl">
-          <thead><tr><th>Họ tên</th><th>Đội / Lớp</th><th>Xếp hạng</th><th style={{ width: 160 }}></th></tr></thead>
+          <thead>
+            <tr>
+              <th>Họ tên</th>
+              <th>Đội / Lớp</th>
+              <th>Trạng thái</th>
+              <th>Xếp hạng</th>
+              <th style={{ width: 200 }}></th>
+            </tr>
+          </thead>
           <tbody>
             {students.map((s) => {
               const ri = rankOf(s.name)
+              const active = s.active === undefined || s.active === null ? 1 : s.active
               return (
-                <tr key={s.id}>
+                <tr key={s.id} style={active === 0 ? { opacity: 0.55 } : undefined}>
                   <td><b>{s.name}</b>{s.note && <div className="small muted">{s.note}</div>}</td>
                   <td><span className="badge">{s.team || '—'}</span><div className="small muted">{s.class_name || ''}</div></td>
+                  <td>{active ? <span className="badge green">Đang mở</span> : <span className="badge red">Đã khóa</span>}</td>
                   <td>{ri >= 0 ? <span className="badge green">Hạng {ri + 1} • {Math.round(ranking[ri].accuracy * 100)}%</span> : <span className="small muted">chưa thi</span>}</td>
                   <td>
                     <div className="row">
@@ -158,7 +209,14 @@ export default function Team() {
                         try { await api.resetStudentPassword(s.id, npw); alert('Đã đặt lại mật khẩu.') }
                         catch (e) { alert(e.message) }
                       }}>🔑 MK</button>
-                      <button className="btn danger" onClick={async () => { if (confirm(`Xóa ${s.name}?`)) { await api.deleteStudent(s.id); load() } }}>Xóa</button>
+                      {isAdmin && (
+                        <button className={`btn ${active ? 'danger' : ''}`} onClick={() => toggleActive(s)}>
+                          {active ? 'Khóa' : 'Mở'}
+                        </button>
+                      )}
+                      {isAdmin && (
+                        <button className="btn danger" onClick={async () => { if (confirm(`Xóa ${s.name}?`)) { await api.deleteStudent(s.id); load() } }}>Xóa</button>
+                      )}
                     </div>
                     {s.phone || s.email ? <div className="small muted">{[s.phone, s.email].filter(Boolean).join(' • ')}</div> : <div className="small muted">chưa có tài khoản</div>}
                   </td>

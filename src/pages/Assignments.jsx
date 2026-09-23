@@ -17,7 +17,8 @@ export default function Assignments() {
 }
 
 function AssignmentList() {
-  const teacher = (getSession().student?.role || 'student') === 'teacher'
+  const rawRole = getSession().student?.role || 'student'
+  const teacher = rawRole === 'teacher' || rawRole === 'admin'
   const [list, setList] = useState([])
   const [classes, setClasses] = useState([])
   const [showCreate, setShowCreate] = useState(false)
@@ -147,7 +148,8 @@ function AssignmentList() {
 
 function AssignmentDetail() {
   const { id } = useParams()
-  const teacher = (getSession().student?.role || 'student') === 'teacher'
+  const rawRole = getSession().student?.role || 'student'
+  const teacher = rawRole === 'teacher' || rawRole === 'admin'
   const [a, setA] = useState(null)
   const [answers, setAnswers] = useState({})
   const [msg, setMsg] = useState('')

@@ -97,6 +97,28 @@ def optional_session(request: Request):
     return d
 def require_teacher(request: Request) -> dict:
     me = optional_session(request)
-    if not me or (me.get("role") or "student") != "teacher":
+    if not me or (me.get("role") or "student") not in ("teacher", "admin"):
         raise HTTPException(403, "Khu vuc giao vien.")
     return me
+
+
+def require_admin(request: Request) -> dict:
+    me = optional_session(request)
+    if not me or (me.get("role") or "student") != "admin":
+        raise HTTPException(403, "Khu vuc quan tri.")
+    return me
+
+
+def is_admin(me) -> bool:
+    return bool(me and (me.get("role") or "student") == "admin")
+
+
+def is_staff(me) -> bool:
+    return bool(me and (me.get("role") or "student") in ("teacher", "admin"))
+
+
+def teacher_coached_team_ids(user_id: int) -> list:
+    rows = get_db().q(
+        "SELECT team_id FROM team_members WHERE user_id=? AND member_role='coach' AND (left_at IS NULL OR left_at='')",
+        (user_id,))
+    return [r["team_id"] for r in rows]

@@ -10,7 +10,8 @@ export default function Grading() {
 }
 
 function GradePick() {
-  const teacher = (getSession().student?.role || 'student') === 'teacher'
+  const rawRole = getSession().student?.role || 'student'
+  const teacher = rawRole === 'teacher' || rawRole === 'admin'
   const [list, setList] = useState([])
   const nav = useNavigate()
   useEffect(() => {
@@ -42,7 +43,8 @@ function GradePick() {
 
 function GradeOne() {
   const { id } = useParams()
-  const teacher = (getSession().student?.role || 'student') === 'teacher'
+  const rawRole = getSession().student?.role || 'student'
+  const teacher = rawRole === 'teacher' || rawRole === 'admin'
   const [data, setData] = useState(null)
   const [msg, setMsg] = useState('')
   const [openId, setOpenId] = useState(null)

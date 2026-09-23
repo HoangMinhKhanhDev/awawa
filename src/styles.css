@@ -134,8 +134,8 @@ button, input, select, textarea { font: inherit; }
 .kpi-cell { flex: 1; padding: 14px 16px; }
 .kpi-cell + .kpi-cell { border-left: 1px solid var(--line-soft); }
 
-/* Tab con (trang Quản lý) */
-.subnav { display: flex; gap: 6px; background: var(--line-soft); border-radius: 12px; padding: 4px; width: fit-content; max-width: 100%; }
+/* Tab con (trang Quản lý / Hồ sơ) */
+.subnav { display: flex; gap: 6px; background: var(--line-soft); border-radius: 12px; padding: 4px; width: fit-content; max-width: 100%; flex-wrap: wrap; }
 .subnav button {
   border: 0; background: transparent; cursor: pointer; font-weight: 600;
   padding: 8px 16px; border-radius: 9px; color: var(--muted);
@@ -203,6 +203,18 @@ table.tbl th {
 }
 table.tbl td { border-bottom: 1px solid var(--line-soft); padding: 10px 8px; text-align: left; vertical-align: top; }
 table.tbl tr:last-child td { border-bottom: 0; }
+
+/* Avatar hồ sơ */
+.avatar {
+  width: 72px; height: 72px; border-radius: 50%;
+  background: var(--leaf-soft); border: 2px solid var(--leaf-line);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--leaf-deep); font-weight: 800; font-size: 28px; flex: none;
+  letter-spacing: -0.02em;
+}
+@media (max-width: 900px) {
+  .avatar { width: 56px; height: 56px; font-size: 22px; }
+}
 
 /* Nhãn */
 .badge {

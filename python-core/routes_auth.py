@@ -1,7 +1,10 @@
+import hashlib
 import os
+import re
+import secrets
 from datetime import datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from auth import (check_dob, check_email, check_gender, current_student, hash_pw,
                    new_session, norm_phone, optional_session, public_student,
@@ -40,8 +43,8 @@ def auth_register(payload: RegisterIn):
             raise HTTPException(400, "Ma giao vien khong dung.")
         role = "teacher"
     now = datetime.now().isoformat(timespec="seconds")
-    cur = get_db().exec("INSERT INTO students (name, class_name, dob, gender, phone, email, password_hash, role, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                  (name, cls, dob, gender, phone or None, email or None, hash_pw(payload.password), role, now))
+    cur = get_db().exec("INSERT INTO students (name, class_name, dob, gender, phone, email, password_hash, role, active, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  (name, cls, dob, gender, phone or None, email or None, hash_pw(payload.password), role, 1, now))
     sid = cur.lastrowid
     tok = new_session(sid)
     return {"token": tok, "student": public_student(get_db().q1("SELECT * FROM students WHERE id=?", (sid,)))}
@@ -57,6 +60,8 @@ def auth_login(payload: LoginIn):
     st = get_db().q1("SELECT * FROM students WHERE phone=? OR email=?", (phone, login))
     if not st or not st["password_hash"] or not verify_pw(payload.password, st["password_hash"]):
         raise HTTPException(401, "Sai ten dang nhap hoac mat khau.")
+    if st["active"] is not None and int(st["active"]) == 0:
+        raise HTTPException(403, "Tai khoan da bi khoa. Lien he giao vien/quan tri.")
     tok = new_session(st["id"])
     return {"token": tok, "student": public_student(get_db().q1("SELECT * FROM students WHERE id=?", (st["id"],)))}
 

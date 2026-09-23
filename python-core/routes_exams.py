@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from auth import optional_session
 from deps import get_db
@@ -74,7 +74,7 @@ def submit_exam(eid: int, payload: SubmitIn, request: Request):
 @router.get("/api/attempts")
 def attempts(student_name: Optional[str] = None, mode: Optional[str] = None, request: Request = None):
     me = optional_session(request) if request is not None else None
-    is_teacher = bool(me and (me.get("role") or "student") == "teacher")
+    is_teacher = bool(me and (me.get("role") or "student") in ("teacher", "admin"))
     if not me:
         return []
     sql = "SELECT * FROM attempts WHERE 1=1"
@@ -92,7 +92,7 @@ def attempts(student_name: Optional[str] = None, mode: Optional[str] = None, req
 @router.get("/api/stats/leaderboard")
 def leaderboard(mode: str = "exam", team: Optional[str] = None, limit: int = 50):
     limit = max(1, min(limit or 50, 100))
-    sql = "SELECT st.id, st.name, st.class_name, st.team, COUNT(a.id) n, MAX(a.accuracy) best, AVG(a.accuracy) avg, MAX(a.created_at) last_at FROM attempts a JOIN students st ON st.id=a.student_id WHERE a.student_id IS NOT NULL AND a.total > 0 AND COALESCE(st.role,'student') <> 'teacher'"
+    sql = "SELECT st.id, st.name, st.class_name, st.team, COUNT(a.id) n, MAX(a.accuracy) best, AVG(a.accuracy) avg, MAX(a.created_at) last_at FROM attempts a JOIN students st ON st.id=a.student_id WHERE a.student_id IS NOT NULL AND a.total > 0 AND COALESCE(st.role,'student') NOT IN ('teacher','admin') AND COALESCE(st.active,1)=1"
     params = []
     if mode == "exam" or mode == "practice":
         sql += " AND a.mode=?"; params.append(mode)
@@ -112,7 +112,8 @@ def leaderboard(mode: str = "exam", team: Optional[str] = None, limit: int = 50)
 @router.get("/api/stats/overview")
 def stats(student_name: Optional[str] = None, request: Request = None):
     me = optional_session(request) if request is not None else None
-    if me and (me.get("role") or "student") != "teacher":
+    role = (me.get("role") if me else "student") or "student"
+    if me and role not in ("teacher", "admin"):
         student_name = me["name"]
     total_q = get_db().count("questions")
     if student_name:

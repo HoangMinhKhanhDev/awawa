@@ -139,9 +139,84 @@ function optional_session() {
     return public_student($s);
 }
 
-// Chặn khu giáo viên: chỉ role=teacher mới qua.
+// Chặn khu giáo viên: teacher hoặc admin.
 function require_teacher() {
     $me = optional_session();
-    if (!$me || ($me['role'] ?? 'student') !== 'teacher') jerr('Khu vực giáo viên.', 403);
+    $role = $me ? ($me['role'] ?? 'student') : '';
+    if (!$me || ($role !== 'teacher' && $role !== 'admin')) jerr('Khu vực giáo viên.', 403);
     return $me;
+}
+
+function require_admin() {
+    $me = optional_session();
+    if (!$me || ($me['role'] ?? 'student') !== 'admin') jerr('Khu vực quản trị.', 403);
+    return $me;
+}
+
+function is_admin($me) {
+    return $me && (($me['role'] ?? 'student') === 'admin');
+}
+
+function is_staff($me) {
+    return $me && in_array(($me['role'] ?? 'student'), array('teacher', 'admin'), true);
+}
+
+function teacher_coached_team_ids($user_id) {
+    $rows = q_all(
+        "SELECT team_id FROM team_members WHERE user_id=? AND member_role='coach' AND (left_at IS NULL OR left_at='')",
+        array($user_id)
+    );
+    $ids = array();
+    foreach ($rows as $r) $ids[] = (int)$r['team_id'];
+    return $ids;
+}
+
+// Tự động thêm bảng Phase 1a nếu chưa có (safe chạy nhiều lần)
+function ensure_school_schema() {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    try {
+        db()->exec("CREATE TABLE IF NOT EXISTS school_years (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(50) NOT NULL UNIQUE,
+            start_date VARCHAR(20) DEFAULT '',
+            end_date VARCHAR(20) DEFAULT '',
+            is_current TINYINT DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        db()->exec("CREATE TABLE IF NOT EXISTS grades (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            school_year_id INT NULL,
+            name VARCHAR(80) NOT NULL,
+            code VARCHAR(20) DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        db()->exec("CREATE TABLE IF NOT EXISTS teams (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            school_year_id INT NULL,
+            grade_id INT NULL,
+            subject_id VARCHAR(64) NULL,
+            name VARCHAR(120) NOT NULL,
+            description VARCHAR(500) DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        db()->exec("CREATE TABLE IF NOT EXISTS team_members (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            team_id INT NOT NULL,
+            user_id INT NOT NULL,
+            member_role VARCHAR(20) DEFAULT 'student',
+            joined_at DATETIME NULL,
+            left_at DATETIME NULL,
+            UNIQUE KEY uq_tmu (team_id, user_id, member_role)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        // cột active
+        $cols = array();
+        foreach (q_all('SHOW COLUMNS FROM students') as $c) $cols[] = $c['Field'];
+        if (!in_array('active', $cols, true)) {
+            db()->exec("ALTER TABLE students ADD COLUMN active TINYINT DEFAULT 1");
+        }
+    } catch (Exception $e) {
+        // bỏ qua nếu DB chưa cấu hình — health sẽ báo
+    }
 }

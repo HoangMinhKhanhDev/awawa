@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
-import { BookOpen, ClipboardCheck, ClipboardList, MessageSquare, PenLine, Users, Trophy, Play, CalendarClock } from 'lucide-react'
+import { BookOpen, ClipboardCheck, ClipboardList, CircleUserRound, MessageSquare, PenLine, Users, Trophy, Play, CalendarClock } from 'lucide-react'
 import { api, getSession } from '../api.js'
 
 export default function Home() {
   const s = getSession()
   const me = s.student
-  const isTeacher = (me?.role || 'student') === 'teacher'
+  const isTeacher = (me?.role || 'student') === 'teacher' || (me?.role || 'student') === 'admin'
   if (!s.token) return <Navigate to="/login" replace />
   return isTeacher ? <TeacherHome /> : <StudentHome me={me} />
 }
@@ -169,6 +169,7 @@ function TeacherHome() {
           <Link className="btn" to="/manage"><Users className="icn sm" />Quản lý học sinh</Link>
           <Link className="btn" to="/progress"><Trophy className="icn sm" />Xem kết quả</Link>
           <Link className="btn" to="/grading"><PenLine className="icn sm" />Chấm bài{ov?.ungraded ? ` (${ov.ungraded})` : ''}</Link>
+          <Link className="btn" to="/profile"><CircleUserRound className="icn sm" />Hồ sơ</Link>
           <Link className="btn" to="/assignments"><Play className="icn sm" />Giao bài mới</Link>
         </div>
       </div>
