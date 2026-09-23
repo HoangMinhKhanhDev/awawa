@@ -868,7 +868,7 @@ if ($path === '/me/progress' && $method === 'GET') {
     $topicRows = q_all('SELECT t.id, t.name,
         (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id) lt,
         (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id) ld
-        FROM topics t WHERE (SELECT COUNT(*) FROM lessons l2 WHERE l2.topic_id=t.id) > 0', array($me['id'], $me['id']));
+        FROM topics t WHERE (SELECT COUNT(*) FROM lessons l2 WHERE l2.topic_id=t.id) > 0', array($me['id']));
     $topicsDone = 0; $topicsWithLessons = 0;
     $currentTopic = null;
     foreach ($topicRows as $t) {
