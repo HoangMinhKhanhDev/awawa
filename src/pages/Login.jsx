@@ -27,7 +27,7 @@ export default function Login() {
       <div className="hero" style={{ textAlign: 'center' }}>
         <Sprout className="icn lg" style={{ margin: '0 auto 6px' }} />
         <h1>Hệ thống bồi dưỡng HSG</h1>
-        <p>Vật lý 11 — đăng nhập để học, làm bài và xem kết quả.</p>
+        <p>Đăng nhập để học, làm bài và xem kết quả.</p>
       </div>
       <form className="card" onSubmit={submit}>
         <label className="lbl" style={{ marginTop: 0 }}>Email / Tài khoản</label>

@@ -193,7 +193,7 @@ class DB:
           token_hash TEXT PRIMARY KEY, student_id INTEGER NOT NULL,
           expires_at TEXT NOT NULL, created_at TEXT)""")
         if self.count("classes") == 0:
-            self.conn.execute("INSERT INTO classes (name, join_code) VALUES ('Vật lý 11', 'HSG2026')")
+            self.conn.execute("INSERT INTO classes (name, join_code) VALUES ('Lớp bồi dưỡng HSG', 'HSG2026')")
         self.conn.commit()
         if self.count("questions") == 0:
             seed(self)
