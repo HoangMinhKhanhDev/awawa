@@ -64,3 +64,20 @@ class PasswordIn(BaseModel):
     new_password: str = ""
 class ResetIn(BaseModel):
     password: str = ""
+class ClassCreateIn(BaseModel):
+    name: str = ""
+    join_code: str = ""
+class ClassJoinIn(BaseModel):
+    join_code: str = ""
+class AssignmentCreateIn(BaseModel):
+    class_id: int
+    topic_id: Optional[str] = None
+    title: str = ""
+    description: str = ""
+    deadline: Optional[str] = None
+    questions: list = []
+class AssignmentSubmitIn(BaseModel):
+    answers: list = []
+class GradeIn(BaseModel):
+    score: float
+    feedback: str = ""

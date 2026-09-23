@@ -11,6 +11,7 @@ const TEAMS = [
 export default function Team() {
   const [students, setStudents] = useState([])
   const [ranking, setRanking] = useState([])
+  const [classes, setClasses] = useState([])
   const [teamFilter, setTeamFilter] = useState('')
   const [search, setSearch] = useState('')
   const [form, setForm] = useState({ name: '', class_name: '', team: 'Nông nghiệp', note: '' })
@@ -20,12 +21,14 @@ export default function Team() {
   const load = async () => {
     setLoading(true)
     try {
-      const [st, stats] = await Promise.all([
+      const [st, stats, cls] = await Promise.all([
         api.students({ team: teamFilter || undefined, search: search || undefined }),
         api.stats(),
+        api.classes().catch(() => []),
       ])
       setStudents(st || [])
       setRanking(stats?.by_student || [])
+      setClasses(cls || [])
     } catch (e) {
       alert(e.message)
     }
@@ -61,12 +64,18 @@ export default function Team() {
   return (
     <div className="grid">
       <div className="card">
-        <h1 style={{ marginTop: 0 }}>Đội tuyển HSG Công nghệ</h1>
+        <h1 style={{ marginTop: 0 }}>Đội tuyển / Lớp học</h1>
         <div className="small muted">
-          Dành cho <b>giáo viên + quản lý đội</b>: thêm học sinh theo 3 đội
-          (Nông nghiệp / Chăn nuôi / Lâm – Thủy sản), theo dõi lượt làm và xếp hạng.
-          Học sinh khi vào mục <b>Thi thử</b> chỉ cần gõ đúng tên như ở đây để được thống kê.
+          Dành cho giáo viên: thêm học sinh, theo dõi lượt làm, đặt lại mật khẩu.
+          Học sinh tự vào lớp bằng mã bên dưới.
         </div>
+        {classes.length > 0 && (
+          <div className="row" style={{ marginTop: 10 }}>
+            {classes.map((c) => (
+              <span key={c.id} className="badge green" style={{ fontSize: 13 }}>{c.name} • mã: <b>{c.join_code}</b></span>
+            ))}
+          </div>
+        )}
         <div className="row" style={{ marginTop: 10 }}>
           <select className="select" value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
             {TEAMS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}

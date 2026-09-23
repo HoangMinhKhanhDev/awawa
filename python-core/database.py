@@ -65,6 +65,46 @@ CREATE TABLE IF NOT EXISTS attempts (
   focus_log TEXT DEFAULT '[]',
   created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS classes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  join_code TEXT NOT NULL UNIQUE,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS class_members (
+  class_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  joined_at TEXT,
+  PRIMARY KEY (class_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS assignments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  class_id INTEGER NOT NULL,
+  topic_id TEXT,
+  title TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  deadline TEXT,
+  created_by INTEGER,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS assign_questions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER NOT NULL,
+  idx INTEGER NOT NULL DEFAULT 1,
+  content TEXT NOT NULL,
+  answer TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS submissions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER NOT NULL,
+  student_id INTEGER NOT NULL,
+  answer TEXT DEFAULT '[]',
+  score REAL,
+  feedback TEXT DEFAULT '',
+  submitted_at TEXT,
+  graded_at TEXT,
+  UNIQUE (assignment_id, student_id)
+);
 """
 
 
@@ -89,6 +129,10 @@ STUDENT_MIGRATIONS = [
     ("role", "TEXT DEFAULT 'student'"),
 ]
 
+TOPIC_MIGRATIONS = [
+    ("description", "TEXT DEFAULT ''"),
+]
+
 
 class DB:
     def __init__(self, path: Path):
@@ -110,9 +154,15 @@ class DB:
         for name, ddl in STUDENT_MIGRATIONS:
             if name not in scols:
                 self.conn.execute(f"ALTER TABLE students ADD COLUMN {name} {ddl}")
+        tcols = {r[1] for r in self.conn.execute("PRAGMA table_info(topics)").fetchall()}
+        for name, ddl in TOPIC_MIGRATIONS:
+            if name not in tcols:
+                self.conn.execute(f"ALTER TABLE topics ADD COLUMN {name} {ddl}")
         self.conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
           token_hash TEXT PRIMARY KEY, student_id INTEGER NOT NULL,
           expires_at TEXT NOT NULL, created_at TEXT)""")
+        if self.count("classes") == 0:
+            self.conn.execute("INSERT INTO classes (name, join_code) VALUES ('Vật lý 11', 'HSG2026')")
         self.conn.commit()
         if self.count("questions") == 0:
             seed(self)

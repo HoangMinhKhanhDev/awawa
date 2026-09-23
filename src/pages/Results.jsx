@@ -1,0 +1,92 @@
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Trophy, ClipboardList, ChartLine } from 'lucide-react'
+import { api, getSession } from '../api.js'
+
+export default function Results() {
+  const s = getSession()
+  const isTeacher = (s.student?.role || 'student') === 'teacher'
+  const [progress, setProgress] = useState(null)
+  const [results, setResults] = useState([])
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    if (!s.token) return
+    if (isTeacher) return
+    api.myProgress().then(setProgress).catch((e) => setMsg(String(e.message || e)))
+    api.myResults().then((r) => setResults(r.results || [])).catch(() => {})
+  }, [])
+
+  if (!s.token) {
+    return (
+      <div className="grid">
+        <div className="card">
+          <h1 style={{ marginTop: 0 }}>Kết quả</h1>
+          <div className="empty">Đăng nhập để xem điểm và tiến độ của bạn. <Link to="/profile">Đăng nhập</Link></div>
+        </div>
+      </div>
+    )
+  }
+  if (isTeacher) {
+    return (
+      <div className="grid">
+        <div className="card">
+          <h1 style={{ marginTop: 0 }}>Kết quả</h1>
+          <div className="small muted">Giáo viên xem tổng quan ở Thống kê, chấm bài ở Chấm bài.</div>
+          <div className="row" style={{ marginTop: 10 }}>
+            <Link className="btn primary" to="/progress">Thống kê</Link>
+            <Link className="btn" to="/grading">Chấm bài</Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const pct = Math.round((progress?.ratio || 0) * 100)
+  return (
+    <div className="grid">
+      <div className="card">
+        <h1 style={{ marginTop: 0 }}>Tiến độ của {s.student?.name}</h1>
+        {msg && <div className="small" style={{ color: '#b91c1c' }}>{msg}</div>}
+        <div className="kpi-strip" style={{ marginTop: 12 }}>
+          <div className="kpi-cell"><div className="muted small">Bài đã giao</div><div className="kpi">{progress?.assigned ?? 0}</div></div>
+          <div className="kpi-cell"><div className="muted small">Đã hoàn thành</div><div className="kpi">{progress?.completed ?? 0}</div></div>
+          <div className="kpi-cell"><div className="muted small">Tỷ lệ hoàn thành</div><div className="kpi">{pct}%</div></div>
+          <div className="kpi-cell"><div className="muted small">Điểm trung bình</div><div className="kpi">{progress?.avg_score ?? '—'}</div></div>
+        </div>
+        <div className="progress" style={{ marginTop: 12 }}><div style={{ width: `${pct}%` }} /></div>
+      </div>
+
+      {progress?.by_topic?.length > 0 && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}><ChartLine className="icn" style={{ verticalAlign: 'middle', marginRight: 6 }} />Điểm theo chuyên đề</h3>
+          {progress.by_topic.map((t) => (
+            <div key={t.topic} className="board-row">
+              <span>{t.topic}</span>
+              <div className="board-score"><b>{t.avg} / 10</b><div className="small muted">{t.n} bài</div></div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}><ClipboardList className="icn" style={{ verticalAlign: 'middle', marginRight: 6 }} />Lịch sử bài tập</h3>
+        {results.length === 0 && <div className="empty">Chưa có bài nào được chấm điểm.</div>}
+        {results.map((r) => (
+          <div key={r.id} className="board-row">
+            <div>
+              <b>{r.title}</b>
+              <div className="small muted">{r.topic_name || 'Chuyên đề chung'}{r.graded_at ? ` • chấm ${new Date(r.graded_at).toLocaleDateString('vi-VN')}` : ''}</div>
+              {r.feedback && <div className="small muted">“{r.feedback}”</div>}
+            </div>
+            <div className="board-score">
+              {r.score != null
+                ? <span className="badge green"><Trophy className="icn sm" />{r.score} / 10</span>
+                : <span className="badge amber">Chờ chấm</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}

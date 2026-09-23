@@ -115,6 +115,24 @@ const authMethods = (call) => ({
   resetStudentPassword: (id, password) => call(`/students/${id}/reset-password`, { method: 'PUT', body: JSON.stringify({ password }) }),
 })
 
+// MVP: lop, bai tap, cham diem, tien do
+// call(path, options) nhu authMethods; qs(params) => "?a=b" hoac "" cho legacy
+const mvpMethods = (call, qs) => ({
+  classes: () => call('/classes'),
+  createClass: (payload) => call('/classes', { method: 'POST', body: JSON.stringify(payload) }),
+  joinClass: (join_code) => call('/classes/join', { method: 'POST', body: JSON.stringify({ join_code }) }),
+  classMembers: (id) => call(`/classes/${id}/members`),
+  assignments: (params = {}) => call('/assignments' + qs(params)),
+  getAssignment: (id) => call(`/assignments/${id}`),
+  createAssignment: (payload) => call('/assignments', { method: 'POST', body: JSON.stringify(payload) }),
+  submitAssignment: (id, answers) => call(`/assignments/${id}/submit`, { method: 'POST', body: JSON.stringify({ answers }) }),
+  assignmentSubmissions: (id) => call(`/assignments/${id}/submissions`),
+  gradeSubmission: (sid, payload) => call(`/submissions/${sid}/grade`, { method: 'PUT', body: JSON.stringify(payload) }),
+  myResults: () => call('/me/results'),
+  myProgress: () => call('/me/progress'),
+  classOverview: () => call('/stats/class-overview'),
+})
+
 async function req(path, options = {}) {
   const base = await getBackendUrlLegacy()
   const extra = /ngrok/i.test(base) ? { 'ngrok-skip-browser-warning': 'true' } : {}
@@ -217,6 +235,12 @@ const legacyApi = {
     return req(`/api/stats/leaderboard${s ? `?${s}` : ''}`)
   },
   ...authMethods((p, o) => req('/api' + p, o)),
+  ...mvpMethods((p, o) => req('/api' + p, o), (params = {}) => {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null) q.append(k, v) })
+    const s = q.toString()
+    return s ? `?${s}` : ''
+  }),
   previewImportText: (text) => req('/api/import/preview-text', { method: 'POST', body: JSON.stringify({ text }) }),
   uploadImport: async (file) => {
     const base = await getBackendUrlLegacy()
@@ -281,6 +305,7 @@ const phpApi = {
   deleteStudent: (id) => preq(`/students/${id}`, { method: 'DELETE' }),
   leaderboard: (params = {}) => preq(`/stats/leaderboard${pquery(params)}`),
   ...authMethods(preq),
+  ...mvpMethods(preq, pquery),
   previewImportText: async (text) => ({ text, drafts: parseTextToDrafts(text) }),
   uploadImport: async (file) => {
     const text = await extractFileText(file)
