@@ -9,10 +9,10 @@
   --faint: #a3a897;
   --line: #e4ddc9;
   --line-soft: #efe9d6;
-  --leaf: #2e7d32;
-  --leaf-deep: #1b5e20;
-  --leaf-soft: #e9f4e9;
-  --leaf-line: #bfe0c2;
+  --leaf: #2563eb;
+  --leaf-deep: #1d4ed8;
+  --leaf-soft: #e8efff;
+  --leaf-line: #b9ccf7;
   --harvest: #b97e14;
   --harvest-soft: #fbf2dc;
   --harvest-line: #f0dcae;
@@ -35,14 +35,14 @@
 html {
   -webkit-text-size-adjust: 100%;
   touch-action: manipulation;
-  -webkit-tap-highlight-color: rgba(46, 125, 50, 0.18);
+  -webkit-tap-highlight-color: rgba(37, 99, 235, 0.18);
 }
-::selection { background: #cfe8d1; }
+::selection { background: #cfe0fd; }
 body {
   margin: 0;
   font-family: "Be Vietnam Pro", -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   background: var(--paper);
-  background-image: radial-gradient(rgba(46, 125, 50, 0.055) 1px, transparent 1px);
+  background-image: radial-gradient(rgba(37, 99, 235, 0.055) 1px, transparent 1px);
   background-size: 22px 22px;
   color: var(--ink);
   font-size: 15px;
