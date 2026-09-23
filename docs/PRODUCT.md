@@ -38,12 +38,13 @@ Checklist code theo 5 giai đoạn. Trạng thái: ✅ có · 🟡 một phần 
 | # | Mục | Trạng thái |
 |---|---|---|
 | 3.1 | Giao bài + hạn + trạng thái | ✅ (hạn chưa chặn nộp) |
-| 3.2 | Giao từ ngân hàng câu | ⬜ |
-| 3.3 | Đề thủ công / ma trận / cửa sổ mở | ⬜ |
-| 3.4 | Trộn câu–đáp án (server) | ⬜ |
+| 3.2 | Giao từ ngân hàng câu | ✅ | Studio bước 4 |
+| 3.3 | Đề thủ công / chia sẻ (shared) + mã đề | ✅ | Studio bước 3 · `GET /exams?mode=shared` |
+| 3.4 | Ma trận / trộn câu server | ⬜ | |
 | 3.5 | Làm bài: autosave, nộp file tự luận | 🟡 |
 | 3.6 | Chấm tay + nhận xét | ✅ |
 | 3.7 | Chấm từng ý, lịch sử sửa điểm | ⬜ |
+| 3.8 | Studio pipeline GV (câu → bài học → đề → BT) | ✅ | `/manage/studio` |
 
 ## Giai đoạn 4 — Dữ liệu
 
@@ -75,7 +76,7 @@ Checklist code theo 5 giai đoạn. Trạng thái: ✅ có · 🟡 một phần 
 | 05 Curriculum | `routes_assign.py` lessons, `src/pages/Topics.jsx` |
 | 06 Learning Materials | ⬜ |
 | 07 Question Bank | `routes_bank.py`, `src/pages/Bank.jsx` |
-| 08 Assignment & Exam | `routes_assign.py`, `routes_exams.py` |
+| 08 Assignment & Exam | `routes_assign.py`, `routes_exams.py`, `src/pages/Studio.jsx` |
 | 09 Assessment & Analytics | `me/progress`, `stats/*`, `src/pages/Progress.jsx` |
 | 10 Notification & Reporting | ⬜ |
 

@@ -104,7 +104,9 @@ const authMethods = (call) => ({
   },
   updateProfile: async (payload) => {
     const r = await call('/auth/profile', { method: 'PUT', body: JSON.stringify(payload) })
-    setSession(localStorage.getItem('sessionToken'), r.student)
+    // Chỉ set lại token khi có token thật — tránh xóa token cũ khi API không trả
+    const t = localStorage.getItem('sessionToken')
+    setSession(t || '', r.student)
     return r
   },
   changePassword: async (payload) => {
@@ -161,17 +163,22 @@ const mvpMethods = (call, qs) => ({
 async function req(path, options = {}) {
   const base = await getBackendUrlLegacy()
   const extra = /ngrok/i.test(base) ? { 'ngrok-skip-browser-warning': 'true' } : {}
+  // Spread options TRƯỚC headers để options.headers của caller không nuốt Content-Type/token
   const res = await fetch(`${base}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...extra, ...sessionHeaders(), ...(options.headers || {}) },
     ...options,
+    headers: { 'Content-Type': 'application/json', ...extra, ...sessionHeaders(), ...(options.headers || {}) },
+    signal: options.signal || AbortSignal.timeout?.(30000),
   })
   if (!res.ok) {
     const t = await res.text().catch(() => '')
     throw new Error(`API ${res.status}: ${t.slice(0, 300)}`)
   }
   const ct = res.headers.get('content-type') || ''
-  if (ct.includes('application/json')) return res.json()
-  return res.text()
+  if (ct.includes('application/json')) return res.text().then((t) => JSON.parse(t))
+  // Trả về text chỉ khi caller kỳ vọng (health check); còn lại cảnh báo — tránh .map crash
+  const text = await res.text()
+  if (path.includes('/health')) return text
+  throw new Error(`API ${res.status}: Phản hồi không phải JSON (${ct || 'rỗng'}).`)
 }
 
 // Đọc text từ file .txt/.docx/.pdf ở client (dùng cho Nhập đề ở chế độ PHP).
@@ -230,6 +237,7 @@ const legacyApi = {
   updateQuestion: (id, payload) => req(`/api/questions/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteQuestion: (id) => req(`/api/questions/${id}`, { method: 'DELETE' }),
   createExam: (payload) => req('/api/exams', { method: 'POST', body: JSON.stringify(payload) }),
+  listExams: (mode = 'shared') => req(`/api/exams?mode=${encodeURIComponent(mode || 'shared')}`),
   getExam: (id) => req(`/api/exams/${id}`),
   submitExam: (id, payload) => req(`/api/exams/${id}/submit`, { method: 'POST', body: JSON.stringify(payload) }),
   attempts: (params = {}) => {
@@ -294,7 +302,11 @@ async function preq(path, options = {}) {
   const isForm = typeof FormData !== 'undefined' && options.body instanceof FormData
   if (!isForm) headers['Content-Type'] = 'application/json'
   if (PHP_TOKEN) headers['X-Api-Token'] = PHP_TOKEN
-  const res = await fetch(`${PHP_BASE}${path}`, { ...options, headers })
+  const res = await fetch(`${PHP_BASE}${path}`, {
+    ...options,
+    headers,
+    signal: options.signal || AbortSignal.timeout?.(30000),
+  })
   if (!res.ok) {
     const t = await res.text().catch(() => '')
     let msg = t.slice(0, 300)
@@ -305,8 +317,10 @@ async function preq(path, options = {}) {
     throw new Error(`API ${res.status}: ${msg}`)
   }
   const ct = res.headers.get('content-type') || ''
-  if (ct.includes('application/json')) return res.json()
-  return res.text()
+  if (ct.includes('application/json')) return res.text().then((t) => JSON.parse(t))
+  const text = await res.text()
+  if (path.includes('/health')) return text
+  throw new Error(`API ${res.status}: Phản hồi không phải JSON (${ct || 'rỗng'}).`)
 }
 
 function pquery(params = {}) {
@@ -326,6 +340,7 @@ const phpApi = {
   updateQuestion: (id, payload) => preq(`/questions/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteQuestion: (id) => preq(`/questions/${id}`, { method: 'DELETE' }),
   createExam: (payload) => preq('/exams', { method: 'POST', body: JSON.stringify(payload) }),
+  listExams: (mode = 'shared') => preq(`/exams${pquery({ mode: mode || 'shared' })}`),
   getExam: (id) => preq(`/exams/${id}`),
   submitExam: (id, payload) => preq(`/exams/${id}/submit`, { method: 'POST', body: JSON.stringify(payload) }),
   attempts: (params = {}) => preq(`/attempts${pquery(params)}`),

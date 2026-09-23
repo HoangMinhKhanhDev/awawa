@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
-import { BookOpen, ClipboardCheck, ClipboardList, CircleUserRound, MessageSquare, PenLine, Users, Trophy, Play, CalendarClock } from 'lucide-react'
+import {
+  IconBook, IconTask, IconUser, IconMessage, IconPen, IconUsers, IconTrophy,
+  IconCalendar, IconWand, IconChart, IconCheckCircle,
+} from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
+import { useUI } from '../components/ui.jsx'
 
 export default function Home() {
   const s = getSession()
@@ -12,11 +16,12 @@ export default function Home() {
 }
 
 function StudentHome({ me }) {
+  const { toast, errMsg } = useUI()
   const [classes, setClasses] = useState([])
   const [progress, setProgress] = useState(null)
   const [assignments, setAssignments] = useState([])
   const [joinCode, setJoinCode] = useState('')
-  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
 
   const load = () => {
     api.classes().then(setClasses).catch(() => setClasses([]))
@@ -26,12 +31,15 @@ function StudentHome({ me }) {
   useEffect(load, [])
 
   const join = async () => {
-    setMsg('')
+    if (!joinCode.trim()) return toast('Nhập mã lớp trước.', 'warn')
+    setBusy(true)
     try {
       await api.joinClass(joinCode.trim())
       setJoinCode('')
+      toast('Đã vào lớp.')
       load()
-    } catch (e) { setMsg(String(e.message || e)) }
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBusy(false)
   }
 
   const inClass = classes.length > 0
@@ -43,17 +51,17 @@ function StudentHome({ me }) {
     <div className="grid">
       <div className="hero">
         <h1>Xin chào, {me?.name}</h1>
-        <p>{classes[0] ? `${classes[0].name}` : 'Chưa vào lớp nào'}{progress?.topics_total ? ` • ${progress.topics_done}/${progress.topics_total} chuyên đề đã hoàn thành` : ''}</p>
+        <p>{classes[0] ? `${classes[0].name}` : 'Chưa vào lớp nào'}{progress?.topics_total ? ` · ${progress.topics_done}/${progress.topics_total} chuyên đề đã hoàn thành` : ''}</p>
         <div style={{ marginTop: 14 }}>
-          <div className="row" style={{ justifyContent: 'space-between', fontSize: 13, opacity: 0.9 }}>
+          <div className="row spread" style={{ fontSize: 13, opacity: 0.9 }}>
             <span>Tiến độ học tập</span><b>{pct}%</b>
           </div>
-          <div className="progress" style={{ marginTop: 6, background: 'rgba(255,255,255,.25)' }}>
-            <div style={{ width: `${pct}%`, background: '#fff' }} />
+          <div className="progress" style={{ marginTop: 6 }}>
+            <div style={{ width: `${pct}%` }} />
           </div>
           {progress?.lessons_total > 0 && (
             <div className="small" style={{ marginTop: 6, opacity: 0.85 }}>
-              {progress.lessons_done}/{progress.lessons_total} bài học • {progress.completed}/{progress.assigned} bài tập đã nộp
+              {progress.lessons_done}/{progress.lessons_total} bài học · {progress.completed}/{progress.assigned} bài tập đã nộp
             </div>
           )}
         </div>
@@ -61,30 +69,29 @@ function StudentHome({ me }) {
 
       {!inClass && (
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>Vào lớp</h3>
+          <h3>Vào lớp</h3>
           <div className="row">
-            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Nhập mã lớp (VD: HSG2026)" value={joinCode} onChange={(e) => setJoinCode(e.target.value)} />
-            <button className="btn primary" onClick={join}>Vào lớp</button>
+            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Nhập mã lớp (VD: HSG2026)" value={joinCode} onChange={(e) => setJoinCode(e.target.value)} aria-label="Mã lớp" />
+            <button className="btn primary" onClick={join} disabled={busy}>{busy ? 'Đang vào…' : 'Vào lớp'}</button>
           </div>
-          {msg && <div className="small" style={{ color: '#b91c1c', marginTop: 8 }}>{msg}</div>}
           <div className="small muted" style={{ marginTop: 8 }}>Nhận mã lớp từ giáo viên để vào lớp và nhận bài tập.</div>
         </div>
       )}
 
       <div className="grid c3">
         <div className="card">
-          <div className="muted small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}><BookOpen className="icn sm" />Đang học</div>
+          <div className="kicker"><IconBook className="icn sm" />Đang học</div>
           <div className="kpi" style={{ fontSize: 18 }}>{ct ? ct.name : (progress?.by_topic?.[0]?.topic || '—')}</div>
           {ct && <div className="small muted">Bài học {ct.done}/{ct.total}</div>}
-          <Link className="small" to={ct ? `/topics/ly` : '/topics'}>Tiếp tục →</Link>
+          <Link className="small" to={ct?.subject_id ? `/topics/${ct.subject_id}` : '/topics'}>Tiếp tục →</Link>
         </div>
         <div className="card">
-          <div className="muted small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}><ClipboardList className="icn sm" />Bài tập</div>
+          <div className="kicker"><IconTask className="icn sm" />Bài tập</div>
           <div className="kpi">{todo.length} bài chưa làm</div>
           <Link className="small" to="/assignments">Xem bài →</Link>
         </div>
         <div className="card">
-          <div className="muted small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Trophy className="icn sm" />Kết quả gần nhất</div>
+          <div className="kicker"><IconTrophy className="icn sm" />Kết quả gần nhất</div>
           <div className="kpi">{progress?.latest_score != null ? `${progress.latest_score} / 10` : '—'}</div>
           {progress?.latest_title && <div className="small muted">{progress.latest_title}</div>}
           <Link className="small" to="/results">Xem tất cả →</Link>
@@ -93,18 +100,18 @@ function StudentHome({ me }) {
 
       {todo.length > 0 && (
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>Bài tập chưa nộp</h3>
+          <h3>Bài tập chưa nộp</h3>
           {todo.slice(0, 5).map((a) => (
             <div key={a.id} className="board-row">
-              <ClipboardCheck className="icn" style={{ color: 'var(--leaf)' }} />
+              <IconCheckCircle className="icn" style={{ color: 'var(--leaf)' }} />
               <div>
                 <b>{a.title}</b>
                 <div className="small muted">
-                  {a.class_name}{a.deadline ? ` • hạn ${new Date(a.deadline).toLocaleDateString('vi-VN')}` : ''}{a.topic_name ? ` • ${a.topic_name}` : ''}
+                  {a.class_name}{a.deadline ? ` · hạn ${new Date(a.deadline).toLocaleDateString('vi-VN')}` : ''}{a.topic_name ? ` · ${a.topic_name}` : ''}
                   {a.status === 'draft' && <span className="badge amber" style={{ marginLeft: 6 }}>Bản nháp</span>}
                 </div>
               </div>
-              <Link className="btn primary" style={{ marginLeft: 'auto' }} to={`/assignments/${a.id}`}>{a.status === 'draft' ? 'Tiếp tục' : 'Làm'}</Link>
+              <Link className="btn primary push" to={`/assignments/${a.id}`}>{a.status === 'draft' ? 'Tiếp tục' : 'Làm'}</Link>
             </div>
           ))}
         </div>
@@ -125,36 +132,36 @@ function TeacherHome() {
         <p>Năm học 2026–2027 — theo dõi học sinh, giao bài và chấm điểm.</p>
       </div>
       <div className="grid c3">
-        <div className="card"><div className="muted small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Users className="icn sm" />Học sinh</div><div className="kpi">{ov?.students ?? '—'}</div></div>
-        <div className="card"><div className="muted small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}><ClipboardList className="icn sm" />Bài đang giao</div><div className="kpi">{String(ov?.active_assignments ?? 0).padStart(2, '0')}</div></div>
-        <div className="card"><div className="muted small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}><MessageSquare className="icn sm" />Bài chờ chấm</div><div className="kpi">{String(ov?.ungraded ?? 0).padStart(2, '0')}</div></div>
+        <div className="card"><div className="kicker"><IconUsers className="icn sm" />Học sinh</div><div className="kpi">{ov?.students ?? '—'}</div></div>
+        <div className="card"><div className="kicker"><IconTask className="icn sm" />Bài đang giao</div><div className="kpi">{String(ov?.active_assignments ?? 0).padStart(2, '0')}</div></div>
+        <div className="card"><div className="kicker"><IconMessage className="icn sm" />Bài chờ chấm</div><div className="kpi">{String(ov?.ungraded ?? 0).padStart(2, '0')}</div></div>
       </div>
 
       <div className="card">
-        <h3 style={{ marginTop: 0 }}>Bài tập gần đây</h3>
+        <h3>Bài tập gần đây</h3>
         {recent.length === 0 && <div className="empty">Chưa có bài tập — bấm "Tạo bài tập" ở tab Bài tập.</div>}
         {recent.map((a) => (
           <div key={a.id} className="board-row">
-            <CalendarClock className="icn" style={{ color: 'var(--leaf)' }} />
+            <IconCalendar className="icn" style={{ color: 'var(--leaf)' }} />
             <div>
               <b>{a.title}</b>
               <div className="small muted">
-                {a.class_name}{a.topic_name ? ` • ${a.topic_name}` : ''}
-                {a.deadline ? ` • hạn ${new Date(a.deadline).toLocaleDateString('vi-VN')}` : ''}
-                {' • '}{a.submitted}/{a.total} đã nộp{a.total - a.submitted > 0 ? ` · ${a.total - a.submitted} chưa nộp` : ''}
+                {a.class_name}{a.topic_name ? ` · ${a.topic_name}` : ''}
+                {a.deadline ? ` · hạn ${new Date(a.deadline).toLocaleDateString('vi-VN')}` : ''}
+                {' · '}{a.submitted}/{a.total} đã nộp{a.total - a.submitted > 0 ? ` · ${a.total - a.submitted} chưa nộp` : ''}
               </div>
             </div>
-            <Link className="btn" style={{ marginLeft: 'auto' }} to={`/grading/${a.id}`}>Xem bài nộp</Link>
+            <Link className="btn push" to={`/grading/${a.id}`}>Xem bài nộp</Link>
           </div>
         ))}
       </div>
 
       {tprog.length > 0 && (
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>Tiến độ lớp theo chuyên đề</h3>
+          <h3>Tiến độ lớp theo chuyên đề</h3>
           {tprog.map((t) => (
-            <div key={t.topic} style={{ padding: '8px 0', borderBottom: '1px solid var(--line-soft)' }}>
-              <div className="row" style={{ justifyContent: 'space-between', fontSize: 14 }}>
+            <div key={t.topic} className="board-row" style={{ display: 'block', padding: '10px 6px' }}>
+              <div className="row spread" style={{ fontSize: 14 }}>
                 <span>{t.topic}</span><b>{t.pct}%</b>
               </div>
               <div className="progress" style={{ marginTop: 6 }}><div style={{ width: `${t.pct}%` }} /></div>
@@ -165,12 +172,12 @@ function TeacherHome() {
 
       <div className="card">
         <div className="row">
-          <Link className="btn primary" to="/assignments"><ClipboardList className="icn sm" />Tạo / quản lý bài tập</Link>
-          <Link className="btn" to="/manage"><Users className="icn sm" />Quản lý học sinh</Link>
-          <Link className="btn" to="/progress"><Trophy className="icn sm" />Xem kết quả</Link>
-          <Link className="btn" to="/grading"><PenLine className="icn sm" />Chấm bài{ov?.ungraded ? ` (${ov.ungraded})` : ''}</Link>
-          <Link className="btn" to="/profile"><CircleUserRound className="icn sm" />Hồ sơ</Link>
-          <Link className="btn" to="/assignments"><Play className="icn sm" />Giao bài mới</Link>
+          <Link className="btn primary" to="/manage/studio"><IconWand className="icn sm" />Studio tạo nội dung</Link>
+          <Link className="btn" to="/assignments"><IconTask className="icn sm" />Bài tập</Link>
+          <Link className="btn" to="/manage/team"><IconUsers className="icn sm" />Quản lý HS</Link>
+          <Link className="btn" to="/grading"><IconPen className="icn sm" />Chấm bài{ov?.ungraded ? ` (${ov.ungraded})` : ''}</Link>
+          <Link className="btn" to="/progress"><IconChart className="icn sm" />Thống kê</Link>
+          <Link className="btn" to="/profile"><IconUser className="icn sm" />Hồ sơ</Link>
         </div>
       </div>
     </div>

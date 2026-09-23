@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react'
-import { CalendarRange, Layers, Users, UserPlus, ShieldCheck } from 'lucide-react'
+import { IconCalendar, IconLayers, IconUsers, IconPlus, IconShield, IconSchool, IconUserPlus } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
-
-function errMsg(e) {
-  return String(e?.message || e || 'Có lỗi').replace(/^API \d+: /, '')
-}
+import { useUI } from '../components/ui.jsx'
 
 export default function School() {
+  const { toast, confirmBox, errMsg } = useUI()
   const me = getSession().student
   const isAdmin = (me?.role || 'student') === 'admin'
   const [years, setYears] = useState([])
@@ -15,16 +13,15 @@ export default function School() {
   const [subjects, setSubjects] = useState([])
   const [members, setMembers] = useState([])
   const [openTeam, setOpenTeam] = useState(null)
-  const [msg, setMsg] = useState('')
   const [yForm, setYForm] = useState({ name: '', start_date: '', end_date: '', is_current: 1 })
   const [gForm, setGForm] = useState({ name: '', code: '' })
   const [tForm, setTForm] = useState({ name: '', subject_id: '', grade_id: '', description: '' })
   const [allStudents, setAllStudents] = useState([])
   const [addUid, setAddUid] = useState('')
   const [addRole, setAddRole] = useState('student')
+  const [saving, setSaving] = useState(false)
 
   const load = async () => {
-    setMsg('')
     try {
       const [y, g, t, s] = await Promise.all([
         api.schoolYears().catch(() => []),
@@ -37,7 +34,7 @@ export default function School() {
         const st = await api.students().catch(() => [])
         setAllStudents(st.filter((x) => (x.role || 'student') === 'student'))
       }
-    } catch (e) { setMsg(errMsg(e)) }
+    } catch (e) { toast(errMsg(e), 'err') }
   }
 
   useEffect(() => { load() }, []) // eslint-disable-line
@@ -47,31 +44,39 @@ export default function School() {
     try {
       const m = await api.teamMembers(team.id)
       setMembers(m)
-    } catch (e) { setMsg(errMsg(e)); setMembers([]) }
+    } catch (e) { toast(errMsg(e), 'err'); setMembers([]) }
   }
 
   const saveYear = async () => {
-    if (!yForm.name.trim()) return setMsg('Nhập tên năm học.')
+    if (saving) return
+    if (!yForm.name.trim()) { toast('Nhập tên năm học.', 'warn'); return }
+    setSaving(true)
     try {
       await api.createSchoolYear({ ...yForm, is_current: yForm.is_current ? 1 : 0 })
       setYForm({ name: '', start_date: '', end_date: '', is_current: 0 })
-      setMsg('Đã thêm năm học.')
+      toast('Đã thêm năm học.')
       load()
-    } catch (e) { setMsg(errMsg(e)) }
+    } catch (e) { toast(errMsg(e), 'err') }
+    setSaving(false)
   }
 
   const saveGrade = async () => {
-    if (!gForm.name.trim()) return setMsg('Nhập tên khối.')
+    if (saving) return
+    if (!gForm.name.trim()) { toast('Nhập tên khối.', 'warn'); return }
+    setSaving(true)
     try {
       await api.createGrade(gForm)
       setGForm({ name: '', code: '' })
-      setMsg('Đã thêm khối.')
+      toast('Đã thêm khối.')
       load()
-    } catch (e) { setMsg(errMsg(e)) }
+    } catch (e) { toast(errMsg(e), 'err') }
+    setSaving(false)
   }
 
   const saveTeam = async () => {
-    if (!tForm.name.trim()) return setMsg('Nhập tên đội tuyển.')
+    if (saving) return
+    if (!tForm.name.trim()) { toast('Nhập tên đội tuyển.', 'warn'); return }
+    setSaving(true)
     try {
       await api.createTeam({
         ...tForm,
@@ -79,9 +84,10 @@ export default function School() {
         subject_id: tForm.subject_id || null,
       })
       setTForm({ name: '', subject_id: '', grade_id: '', description: '' })
-      setMsg('Đã thêm đội tuyển.')
+      toast('Đã thêm đội tuyển.')
       load()
-    } catch (e) { setMsg(errMsg(e)) }
+    } catch (e) { toast(errMsg(e), 'err') }
+    setSaving(false)
   }
 
   const toggleCurrent = async (y) => {
@@ -91,34 +97,35 @@ export default function School() {
         is_current: y.is_current ? 0 : 1,
       })
       load()
-    } catch (e) { setMsg(errMsg(e)) }
+    } catch (e) { toast(errMsg(e), 'err') }
   }
 
   const addMember = async () => {
-    if (!openTeam || !addUid) return setMsg('Chọn người.')
+    if (!openTeam || !addUid) { toast('Chọn người.', 'warn'); return }
     try {
       await api.addTeamMember(openTeam.id, { user_id: Number(addUid), member_role: addRole })
-      setAddUid(''); setAddRole('student'); setMsg('Đã thêm thành viên.')
+      setAddUid(''); setAddRole('student'); toast('Đã thêm thành viên.')
       openMembers(openTeam)
       load()
-    } catch (e) { setMsg(errMsg(e)) }
+    } catch (e) { toast(errMsg(e), 'err') }
   }
 
   const removeMember = async (uid, name) => {
     if (!openTeam) return
-    if (!confirm(`Rời đội ${name}?`)) return
+    const ok = await confirmBox(`Rời đội ${name}?`, { danger: true, okLabel: 'Rời đội' })
+    if (!ok) return
     try {
       await api.removeTeamMember(openTeam.id, uid)
       openMembers(openTeam)
       load()
-    } catch (e) { setMsg(errMsg(e)) }
+    } catch (e) { toast(errMsg(e), 'err') }
   }
 
   if (!isAdmin) {
     return (
       <div className="grid">
         <div className="card">
-          <h1 style={{ marginTop: 0 }}>Cấu trúc nhà trường</h1>
+          <h1>Cấu trúc nhà trường</h1>
           <div className="empty">Chỉ tài khoản quản trị mới chỉnh sửa năm học / khối / đội tuyển.</div>
         </div>
       </div>
@@ -128,15 +135,12 @@ export default function School() {
   return (
     <div className="grid">
       <div className="card">
-        <h1 style={{ marginTop: 0, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <ShieldCheck className="icn" />Cấu trúc nhà trường
-        </h1>
+        <h1 className="icon-h"><IconSchool className="icn" />Cấu trúc nhà trường</h1>
         <div className="small muted">Năm học → Khối → Đội tuyển → Thành viên. Phase 1a — phân quyền theo đội.</div>
-        {msg && <div className="small" style={{ color: msg.startsWith('Đã') ? '#15803d' : '#b91c1c', marginTop: 8 }}>{msg}</div>}
       </div>
 
       <div className="card">
-        <h3 style={{ marginTop: 0 }}><CalendarRange className="icn" style={{ verticalAlign: 'middle', marginRight: 6 }} />Năm học</h3>
+        <h3 className="icon-h"><IconCalendar className="icn" />Năm học</h3>
         {years.map((y) => (
           <div key={y.id} className="board-row">
             <div>
@@ -144,24 +148,24 @@ export default function School() {
               <div className="small muted">{y.start_date || '—'} → {y.end_date || '—'}</div>
             </div>
             <span className={`badge ${y.is_current ? 'green' : ''}`}>{y.is_current ? 'Hiện hành' : 'Lưu trữ'}</span>
-            {!y.is_current && <button className="btn" onClick={() => toggleCurrent(y)}>Đặt hiện hành</button>}
+            {!y.is_current && <button className="btn sm" onClick={() => toggleCurrent(y)}>Đặt hiện hành</button>}
           </div>
         ))}
         <div className="row" style={{ marginTop: 12 }}>
-          <input className="input" style={{ maxWidth: 160 }} placeholder="2027-2028" value={yForm.name} onChange={(e) => setYForm({ ...yForm, name: e.target.value })} />
-          <input className="input" type="date" style={{ maxWidth: 170 }} value={yForm.start_date} onChange={(e) => setYForm({ ...yForm, start_date: e.target.value })} />
-          <input className="input" type="date" style={{ maxWidth: 170 }} value={yForm.end_date} onChange={(e) => setYForm({ ...yForm, end_date: e.target.value })} />
+          <input className="input" style={{ maxWidth: 160 }} placeholder="2027-2028" aria-label="Tên năm học" value={yForm.name} onChange={(e) => setYForm({ ...yForm, name: e.target.value })} />
+          <input className="input" type="date" style={{ maxWidth: 170 }} aria-label="Ngày bắt đầu" value={yForm.start_date} onChange={(e) => setYForm({ ...yForm, start_date: e.target.value })} />
+          <input className="input" type="date" style={{ maxWidth: 170 }} aria-label="Ngày kết thúc" value={yForm.end_date} onChange={(e) => setYForm({ ...yForm, end_date: e.target.value })} />
           <label className="row small" style={{ gap: 6 }}>
             <input type="checkbox" checked={!!yForm.is_current} onChange={(e) => setYForm({ ...yForm, is_current: e.target.checked ? 1 : 0 })} />
             Hiện hành
           </label>
-          <button className="btn primary" onClick={saveYear}>+ Thêm năm học</button>
+          <button className="btn primary" onClick={saveYear} disabled={saving}><IconPlus className="icn sm" />Thêm năm học</button>
         </div>
       </div>
 
       <div className="grid c2">
         <div className="card">
-          <h3 style={{ marginTop: 0 }}><Layers className="icn" style={{ verticalAlign: 'middle', marginRight: 6 }} />Khối lớp</h3>
+          <h3 className="icon-h"><IconLayers className="icn" />Khối lớp</h3>
           <table className="tbl">
             <thead><tr><th>Khối</th><th>Mã</th><th>Năm học</th></tr></thead>
             <tbody>
@@ -171,14 +175,14 @@ export default function School() {
             </tbody>
           </table>
           <div className="row" style={{ marginTop: 10 }}>
-            <input className="input" style={{ flex: 1 }} placeholder="Khối 13" value={gForm.name} onChange={(e) => setGForm({ ...gForm, name: e.target.value })} />
-            <input className="input" style={{ maxWidth: 80 }} placeholder="13" value={gForm.code} onChange={(e) => setGForm({ ...gForm, code: e.target.value })} />
-            <button className="btn primary" onClick={saveGrade}>+</button>
+            <input className="input" style={{ flex: 1 }} placeholder="Khối 13" aria-label="Tên khối" value={gForm.name} onChange={(e) => setGForm({ ...gForm, name: e.target.value })} />
+            <input className="input" style={{ maxWidth: 80 }} placeholder="13" aria-label="Mã khối" value={gForm.code} onChange={(e) => setGForm({ ...gForm, code: e.target.value })} />
+            <button className="btn primary" aria-label="Thêm khối" onClick={saveGrade} disabled={saving}><IconPlus className="icn sm" /></button>
           </div>
         </div>
 
         <div className="card">
-          <h3 style={{ marginTop: 0 }}><Users className="icn" style={{ verticalAlign: 'middle', marginRight: 6 }} />Thành viên đội đang mở</h3>
+          <h3 className="icon-h"><IconUsers className="icn" />Thành viên đội đang mở</h3>
           {!openTeam ? (
             <div className="empty">Chọn một đội ở danh sách bên dưới để quản lý thành viên.</div>
           ) : (
@@ -191,21 +195,21 @@ export default function School() {
                     <div className="small muted">{m.member_role === 'coach' ? 'Phụ trách' : 'Học sinh'}{m.class_name ? ` · ${m.class_name}` : ''}</div>
                   </div>
                   {m.active === 0 && <span className="badge red">Đã khóa</span>}
-                  <button className="btn danger" style={{ marginLeft: 'auto' }} onClick={() => removeMember(m.user_id, m.name)}>Rời đội</button>
+                  <button className="btn danger sm push" onClick={() => removeMember(m.user_id, m.name)}>Rời đội</button>
                 </div>
               ))}
               <div className="row" style={{ marginTop: 10 }}>
-                <select className="select" style={{ flex: 1 }} value={addUid} onChange={(e) => setAddUid(e.target.value)}>
+                <select className="select" style={{ flex: 1 }} aria-label="Chọn tài khoản" value={addUid} onChange={(e) => setAddUid(e.target.value)}>
                   <option value="">— Chọn tài khoản —</option>
                   {allStudents.map((s) => (
                     <option key={s.id} value={s.id}>{s.name} ({s.phone || s.email || s.id})</option>
                   ))}
                 </select>
-                <select className="select" style={{ maxWidth: 140 }} value={addRole} onChange={(e) => setAddRole(e.target.value)}>
+                <select className="select" style={{ maxWidth: 140 }} aria-label="Vai trò" value={addRole} onChange={(e) => setAddRole(e.target.value)}>
                   <option value="student">Học sinh</option>
                   <option value="coach">Phụ trách</option>
                 </select>
-                <button className="btn primary" onClick={addMember}><UserPlus className="icn sm" />Thêm</button>
+                <button className="btn primary" onClick={addMember}><IconUserPlus className="icn sm" />Thêm</button>
               </div>
             </>
           )}
@@ -213,7 +217,7 @@ export default function School() {
       </div>
 
       <div className="card">
-        <h3 style={{ marginTop: 0 }}>Đội tuyển ({teams.length})</h3>
+        <h3>Đội tuyển ({teams.length})</h3>
         <table className="tbl">
           <thead>
             <tr><th>Tên</th><th>Môn</th><th>Khối</th><th>HS</th><th>Coach</th><th></th></tr>
@@ -228,11 +232,12 @@ export default function School() {
                 <td>{t.coach_count ?? 0}</td>
                 <td>
                   <div className="row">
-                    <button className="btn" onClick={() => openMembers(t)}>Thành viên</button>
-                    <button className="btn danger" onClick={async () => {
-                      if (!confirm(`Xóa đội ${t.name}?`)) return
-                      try { await api.deleteTeam(t.id); if (openTeam?.id === t.id) { setOpenTeam(null); setMembers([]) } load() }
-                      catch (e) { setMsg(errMsg(e)) }
+                    <button className="btn sm" onClick={() => openMembers(t)}>Thành viên</button>
+                    <button className="btn danger sm" onClick={async () => {
+                      const ok = await confirmBox(`Xóa đội ${t.name}?`, { danger: true, okLabel: 'Xóa' })
+                      if (!ok) return
+                      try { await api.deleteTeam(t.id); if (openTeam?.id === t.id) { setOpenTeam(null); setMembers([]) } load(); toast('Đã xóa đội.') }
+                      catch (e) { toast(errMsg(e), 'err') }
                     }}>Xóa</button>
                   </div>
                 </td>
@@ -241,16 +246,16 @@ export default function School() {
           </tbody>
         </table>
         <div className="row" style={{ marginTop: 12 }}>
-          <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="Tên đội (VD: HSG Sinh học)" value={tForm.name} onChange={(e) => setTForm({ ...tForm, name: e.target.value })} />
-          <select className="select" style={{ maxWidth: 180 }} value={tForm.subject_id} onChange={(e) => setTForm({ ...tForm, subject_id: e.target.value })}>
+          <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="Tên đội (VD: HSG Sinh học)" aria-label="Tên đội" value={tForm.name} onChange={(e) => setTForm({ ...tForm, name: e.target.value })} />
+          <select className="select" style={{ maxWidth: 180 }} aria-label="Môn của đội" value={tForm.subject_id} onChange={(e) => setTForm({ ...tForm, subject_id: e.target.value })}>
             <option value="">Môn —</option>
             {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
-          <select className="select" style={{ maxWidth: 140 }} value={tForm.grade_id} onChange={(e) => setTForm({ ...tForm, grade_id: e.target.value })}>
+          <select className="select" style={{ maxWidth: 140 }} aria-label="Khối của đội" value={tForm.grade_id} onChange={(e) => setTForm({ ...tForm, grade_id: e.target.value })}>
             <option value="">Khối —</option>
             {grades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
           </select>
-          <button className="btn primary" onClick={saveTeam}>+ Thêm đội</button>
+          <button className="btn primary" onClick={saveTeam} disabled={saving}><IconPlus className="icn sm" />Thêm đội</button>
         </div>
       </div>
     </div>

@@ -15,22 +15,49 @@ router = APIRouter()
 @router.post("/api/exams")
 def create_exam(payload: ExamIn):
     now = datetime.now().isoformat(timespec="seconds")
+    mode = payload.mode or "exam"
     cur = get_db().exec("INSERT INTO exams (title, mode, duration_min, question_ids, created_at) VALUES (?,?,?,?,?)",
-                  (payload.title, payload.mode, payload.duration_min, json.dumps(payload.question_ids or []), now))
-    return {"id": cur.lastrowid, "title": payload.title, "mode": payload.mode}
+                  (payload.title, mode, payload.duration_min, json.dumps(payload.question_ids or []), now))
+    return {"id": cur.lastrowid, "title": payload.title, "mode": mode}
+
+
+@router.get("/api/exams")
+def list_exams(request: Request, mode: str = "shared"):
+    """GV đăng đề chia sẻ (mode=shared). HS xem danh sách shared để bấm làm."""
+    rows = get_db().q(
+        """SELECT id, title, mode, duration_min, question_ids, created_at
+           FROM exams WHERE mode=? ORDER BY id DESC LIMIT 50""",
+        (mode or "shared",))
+    out = []
+    for r in rows:
+        try:
+            ids = json.loads(r["question_ids"] or "[]")
+        except Exception:
+            ids = []
+        out.append({
+            "id": r["id"], "title": r["title"], "mode": r["mode"],
+            "duration_min": r["duration_min"], "n_questions": len(ids),
+            "created_at": r["created_at"],
+        })
+    return out
 
 
 @router.get("/api/exams/{eid}")
 def get_exam(eid: int):
     r = get_db().q1("SELECT * FROM exams WHERE id=?", (eid,))
-    if not r: raise HTTPException(404, "KhÃ´ng tÃ¬m tháº¥y Ä‘á»")
+    if not r: raise HTTPException(404, "Khong tim thay de")
     try: ids = json.loads(r["question_ids"] or "[]")
     except Exception: ids = []
     qs = []
     for qid in ids:
         qr = get_db().q1("SELECT * FROM questions WHERE id=?", (qid,))
         if qr: qs.append(row_to_q(qr))
-    return {"id": r["id"], "title": r["title"], "mode": r["mode"], "questions": qs}
+    try:
+        duration = r["duration_min"]
+    except Exception:
+        duration = None
+    return {"id": r["id"], "title": r["title"], "mode": r["mode"],
+            "duration_min": duration, "questions": qs}
 
 
 @router.post("/api/exams/{eid}/submit")

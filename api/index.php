@@ -303,6 +303,21 @@ if ($method === 'POST' && $path === '/exams') {
     j(array('id' => (int)db()->lastInsertId(), 'title' => $b['title'] ?? 'Đề', 'mode' => $b['mode'] ?? 'practice'));
 }
 
+if ($method === 'GET' && $path === '/exams') {
+    $mode = isset($_GET['mode']) && $_GET['mode'] !== '' ? $_GET['mode'] : 'shared';
+    $rows = q_all('SELECT id, title, mode, duration_min, question_ids, created_at FROM exams WHERE mode=? ORDER BY id DESC LIMIT 50', array($mode));
+    $out = array();
+    foreach ($rows as $r) {
+        $ids = jlist($r['question_ids']);
+        $out[] = array(
+            'id' => (int)$r['id'], 'title' => $r['title'], 'mode' => $r['mode'],
+            'duration_min' => (int)$r['duration_min'], 'n_questions' => count($ids),
+            'created_at' => $r['created_at'],
+        );
+    }
+    j($out);
+}
+
 if ($method === 'GET' && preg_match('#^/exams/(\d+)$#', $path, $m)) {
     $ex = q_one('SELECT * FROM exams WHERE id=?', array((int)$m[1]));
     if (!$ex) jerr('Không tìm thấy đề', 404);
@@ -314,7 +329,8 @@ if ($method === 'GET' && preg_match('#^/exams/(\d+)$#', $path, $m)) {
         foreach (q_all("SELECT * FROM questions WHERE id IN ($in)", $ids) as $r) $byId[$r['id']] = $r;
         foreach ($ids as $qid) if (isset($byId[$qid])) $qs[] = row_to_q($byId[$qid]);
     }
-    j(array('id' => (int)$ex['id'], 'title' => $ex['title'], 'mode' => $ex['mode'], 'questions' => $qs));
+    j(array('id' => (int)$ex['id'], 'title' => $ex['title'], 'mode' => $ex['mode'],
+        'duration_min' => (int)$ex['duration_min'], 'questions' => $qs));
 }
 
 // ---------------- SUBMIT ----------------
