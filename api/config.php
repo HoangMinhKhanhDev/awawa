@@ -449,6 +449,73 @@ function agnes_parse_json($text) {
     return $j;
 }
 
+// Streaming: goi Agnes voi stream=true, moi chunk SSE forward ra client qua $emit.
+// $emit(string $event, array $data) — gui 1 event SSE. Tra ve noi dung text day du.
+function agnes_chat_stream($messages, $model, $emit, $max_tokens = 4000, $temperature = 0.4) {
+    if (AGNES_API_KEY === '') { $emit('error', array('message' => 'Thieu AGNES_API_KEY.')); return null; }
+    if ($model === '' || !in_array($model, agnes_models(), true)) $model = AGNES_DEFAULT_MODEL;
+    $payload = json_encode(array(
+        'model' => $model,
+        'messages' => $messages,
+        'temperature' => $temperature,
+        'max_tokens' => $max_tokens,
+        'stream' => true,
+    ), JSON_UNESCAPED_UNICODE);
+    $ch = curl_init(rtrim(AGNES_BASE_URL, '/') . '/chat/completions');
+    $buf = '';
+    $full = '';
+    $emit_fn = function ($ch, $chunk) use (&$buf, &$full, $emit) {
+        $buf .= $chunk;
+        // SSE: moi line bat dau "data: " (hoac data:)
+        while (($pos = strpos($buf, "\n")) !== false) {
+            $line = rtrim(substr($buf, 0, $pos), "\r");
+            $buf = substr($buf, $pos + 1);
+            if ($line === '' || strpos($line, 'data:') !== 0) continue;
+            $data = trim(substr($line, 5));
+            if ($data === '[DONE]') continue;
+            $j = json_decode($data, true);
+            $delta = $j['choices'][0]['delta']['content'] ?? '';
+            if ($delta !== '') {
+                $full .= $delta;
+                $emit('delta', array('text' => $delta));
+            }
+        }
+        return strlen($chunk);
+    };
+    curl_setopt_array($ch, array(
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_HEADER => false,
+        CURLOPT_WRITEFUNCTION => $emit_fn,
+        CURLOPT_HTTPHEADER => array(
+            'Authorization: Bearer ' . AGNES_API_KEY,
+            'Content-Type: application/json',
+            'Accept: text/event-stream',
+        ),
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_TIMEOUT => 120,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_FLUSH => true,
+    ));
+    $ok = curl_exec($ch);
+    $err = curl_error($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($ok === false && $err) {
+        $emit('error', array('message' => 'AI loi mang: ' . $err));
+        return null;
+    }
+    if ($code >= 400 && $full === '') {
+        $emit('error', array('message' => 'AI loi HTTP ' . $code));
+        return null;
+    }
+    if ($full === '') {
+        $emit('error', array('message' => 'AI khong tra ve noi dung.'));
+        return null;
+    }
+    return $full;
+}
+
 // ---------------- Cloze (diem khuyet) ----------------
 // Norm: lowercase, bo dau, bo thua ky tu, trim.
 function cloze_norm($s) {

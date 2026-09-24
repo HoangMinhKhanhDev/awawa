@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  IconBook, IconTask, IconFileUp, IconFile, IconLayers, IconChecks,
-  IconPlay, IconPlus, IconTimer, IconTrophy, IconUpload, IconWand, IconCheckCircle,
+  IconBook, IconTask, IconFileUp, IconLayers, IconChecks,
+  IconTimer, IconUpload, IconWand, IconPlus, IconX,
+  IconPlay, IconTrophy, IconCheckCircle, IconFile,
 } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
 import { parseTextToDrafts } from '../lib/parseImport.js'
@@ -11,12 +12,12 @@ import { isStaffRole } from '../lib/roles.js'
 
 const optsOf = (q) => { try { const p = JSON.parse(q.options || '[]'); return Array.isArray(p) ? p : [] } catch { return [] } }
 
-const STEPS = [
-  { id: 'ai', label: 'AI tạo nội dung', icon: IconWand },
-  { id: 'import', label: 'Nhập câu hỏi', icon: IconFileUp },
-  { id: 'lesson', label: 'Bài học', icon: IconBook },
-  { id: 'exam', label: 'Đề thi', icon: IconTimer },
-  { id: 'assign', label: 'Bài tập', icon: IconTask },
+const TABS = [
+  { id: 'ai', label: 'Sinh nội dung' },
+  { id: 'import', label: 'Nhập tay' },
+  { id: 'lesson', label: 'Bài học' },
+  { id: 'exam', label: 'Đề thi' },
+  { id: 'assign', label: 'Giao bài' },
 ]
 
 export default function Studio() {
@@ -27,69 +28,61 @@ export default function Studio() {
 
   if (!isStaff) {
     return (
-      <div className="grid">
-        <div className="card">
-          <h1>Studio nội dung</h1>
-          <div className="empty">Chỉ giáo viên / quản trị dùng pipeline tạo tài liệu & đề thi.</div>
+      <div className="studio-page">
+        <div className="studio-empty">
+          <h1>Chỉ giáo viên và quản trị soạn ở đây.</h1>
+          <p>Đăng nhập tài khoản được cấp quyền ở tab Cá nhân.</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="grid">
-      <div className="card">
-        <h1 className="icon-h"><IconWand className="icn" />Studio tạo nội dung</h1>
-        <div className="small muted">
-          Bắt đầu với <b>AI</b> để sinh câu hỏi / bài học / đề / flashcard / cloze, duyệt rồi lưu.
-          Hoặc nhập tay ở các tab sau.
+    <div className="studio-page">
+      <header className="studio-head">
+        <div className="studio-title">
+          <h1>Soạn bài</h1>
+          <p>Sinh bằng AI rồi duyệt, hoặc nhập tay. Chạy song song được — không theo thứ tự bắt buộc.</p>
         </div>
-        <div className="subnav" style={{ marginTop: 12 }} role="tablist" aria-label="Chức năng Studio">
-          {STEPS.map((s) => {
-            const Icon = s.icon
-            return (
-              <button key={s.id} role="tab" aria-selected={step === s.id} className={step === s.id ? 'on' : ''} onClick={() => setStep(s.id)}>
-                <Icon className="icn sm" />{s.label}
-              </button>
-            )
-          })}
-        </div>
-      </div>
+        <nav className="segment" aria-label="Chức năng soạn">
+          {TABS.map((t) => (
+            <button key={t.id} type="button" role="tab" aria-selected={step === t.id}
+              className={step === t.id ? 'on' : ''} onClick={() => setStep(t.id)}>
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </header>
 
-      {step === 'ai' && <StepAI goManual={setStep} />}
+      {step === 'ai' && <StepAI goTab={setStep} />}
       {step === 'import' && <StepImport onNext={() => setStep('lesson')} />}
       {step === 'lesson' && <StepLesson onNext={() => setStep('exam')} />}
       {step === 'exam' && <StepExam onNext={() => setStep('assign')} />}
       {step === 'assign' && <StepAssign nav={nav} />}
 
-      <div className="card">
-        <div className="row spread">
-          <div className="small muted">Pipeline không chặn bước — nhảy bất kỳ đâu cũng được.</div>
-          <div className="row">
-            <Link className="btn" to="/manage/bank"><IconChecks className="icn sm" />Mở ngân hàng</Link>
-            <Link className="btn" to="/manage/import"><IconUpload className="icn sm" />Nhập DOCX/PDF</Link>
-          </div>
-        </div>
-      </div>
+      <footer className="studio-foot">
+        <Link className="btn" to="/manage/bank"><IconChecks className="icn sm" />Ngân hàng câu hỏi</Link>
+        <Link className="btn" to="/manage/import"><IconUpload className="icn sm" />Nhập DOCX / PDF</Link>
+      </footer>
     </div>
   )
 }
 
-/* ---------- Tab AI: sinh noi dung bang Agnes AI ---------- */
+/* ---------- Sinh nội dung (stream) ---------- */
 const AI_TYPES = [
-  { id: 'questions', label: 'Câu hỏi trắc nghiệm', hint: 'Lưu vào ngân hàng' },
-  { id: 'cloze', label: 'Điền từ (cloze)', hint: 'Câu có ___ / {{từ}}' },
-  { id: 'lesson', label: 'Bài học', hint: 'Nội dung lý thuyết' },
-  { id: 'exam', label: 'Đề thi', hint: ' publish đề shared' },
-  { id: 'flashcards', label: 'Flashcard', hint: 'Thẻ lật trước/sau' },
+  { id: 'questions', label: 'Câu hỏi', hint: 'lưu vào ngân hàng' },
+  { id: 'cloze', label: 'Điền từ', hint: 'câu có ô trống' },
+  { id: 'lesson', label: 'Bài học', hint: 'lý thuyết' },
+  { id: 'exam', label: 'Đề thi', hint: 'công bố cho lớp' },
+  { id: 'flashcards', label: 'Thẻ nhớ', hint: 'lật trước / sau' },
 ]
 const AI_MODELS = [
-  { id: 'agnes-2.5-flash', label: 'agnes-2.5-flash (khuyên dùng)' },
-  { id: 'agnes-2.0-flash', label: 'agnes-2.0-flash (cân bằng)' },
-  { id: 'agnes-1.5-flash', label: 'agnes-1.5-flash (nhanh)' },
+  { id: 'agnes-2.5-flash', label: 'Sâu (2.5)' },
+  { id: 'agnes-2.0-flash', label: 'Cân bằng (2.0)' },
+  { id: 'agnes-1.5-flash', label: 'Nhanh (1.5)' },
 ]
 
-function StepAI({ goManual }) {
+function StepAI({ goTab }) {
   const { toast, errMsg } = useUI()
   const [subjects, setSubjects] = useState([])
   const [topics, setTopics] = useState([])
@@ -98,18 +91,23 @@ function StepAI({ goManual }) {
     subject: '', subject_id: '', topic: '', topic_id: '',
     count: 5, difficulty: 'vận dụng', qtype: 'trac_nghiem', prompt: '',
   })
-  const [busy, setBusy] = useState(false)
+  // phase: idle | streaming | done | error
+  const [phase, setPhase] = useState('idle')
+  const [raw, setRaw] = useState('')
   const [preview, setPreview] = useState(null)
+  const [previewMeta, setPreviewMeta] = useState(null)
   const [saving, setSaving] = useState(false)
+  const abortRef = useRef(null)
+  const rawRef = useRef('')
 
   useEffect(() => {
     api.subjects().then(setSubjects).catch(() => {})
+    return () => abortRef.current?.abort()
   }, [])
 
   const pickSubject = async (sid) => {
-    setForm((f) => ({ ...f, subject_id: sid, topic_id: '' }))
     const s = subjects.find((x) => x.id === sid)
-    setForm((f) => ({ ...f, subject: s?.name || '' }))
+    setForm((f) => ({ ...f, subject_id: sid, topic_id: '', subject: s?.name || '' }))
     if (sid) api.topics(sid).then(setTopics).catch(() => setTopics([]))
     else setTopics([])
   }
@@ -119,60 +117,76 @@ function StepAI({ goManual }) {
     setForm((f) => ({ ...f, topic_id: tid, topic: t?.name || f.topic }))
   }
 
+  const stop = () => {
+    abortRef.current?.abort()
+  }
+
   const generate = async () => {
     if (!form.topic.trim() && !form.prompt.trim()) {
-      return toast('Nhập chủ đề hoặc yêu cầu thêm.', 'warn')
+      return toast('Gõ chủ đề trước, rồi bấm Soạn.', 'warn')
     }
-    setBusy(true); setPreview(null)
+    setPreview(null); setPreviewMeta(null)
+    setRaw(''); rawRef.current = ''
+    setPhase('streaming')
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    let gotResult = false
+    let gotError = false
     try {
-      const r = await api.aiGenerate({
+      await api.aiGenerateStream({
         type: form.type, model: form.model,
         topic: form.topic, subject: form.subject,
         count: Number(form.count) || 5,
         difficulty: form.difficulty, qtype: form.qtype,
         prompt: form.prompt,
-      })
-      setPreview(r.data)
-      toast('AI đã sinh — kiểm tra preview rồi bấm Lưu.')
-    } catch (e) { toast(errMsg(e), 'err') }
-    setBusy(false)
+      }, ({ event, data }) => {
+        if (event === 'delta') {
+          rawRef.current += data.text || ''
+          setRaw(rawRef.current)
+        } else if (event === 'result') {
+          gotResult = true
+          setPreview(data.data)
+          setPreviewMeta({ model: data.model, type: data.type })
+          setPhase('done')
+          toast('Xong — xem bên phải rồi bấm Lưu.')
+        } else if (event === 'error') {
+          gotError = true
+          setPhase('error')
+          toast(data.message || 'AI gặp lỗi.', 'err')
+        }
+      }, ctrl.signal)
+      if (!gotResult && !gotError) {
+        setPhase('error')
+        toast('Kết nối ngắt trước khi AI xong. Bấm Soạn lại.', 'err')
+      }
+    } catch (e) {
+      if (e?.name === 'AbortError') {
+        setPhase('idle')
+        toast('Đã dừng.')
+      } else {
+        setPhase('error')
+        toast(errMsg(e), 'err')
+      }
+    }
   }
 
-  // ---------- SAVE handlers ----------
-  const saveQuestions = async () => {
-    const qs = (preview?.questions || []).map((q) => ({
-      subject_id: form.subject_id, topic_id: form.topic_id || null,
-      grade: 12, difficulty: form.difficulty,
-      qtype: q.qtype || form.qtype,
-      content: q.content, options: q.options || [],
-      correct_answer: q.correct_answer || '', explanation: q.explanation || '',
-      score: 1, source: 'ai',
-    })).filter((q) => q.content && q.subject_id)
-    if (!qs.length) return toast('Cần chọn môn + câu hỏi hợp lệ.', 'warn')
+  // ---------- SAVE ----------
+  const bankFrom = (qtype) => (preview?.questions || []).map((q) => ({
+    subject_id: form.subject_id, topic_id: form.topic_id || null,
+    grade: 12, difficulty: form.difficulty, qtype: q.qtype || qtype,
+    content: q.content, options: q.options || [],
+    correct_answer: q.correct_answer || '', explanation: q.explanation || '',
+    score: 1, source: 'ai',
+  })).filter((q) => q.content && q.subject_id)
+
+  const saveQuestions = async (qt) => {
+    const qs = bankFrom(qt)
+    if (!qs.length) return toast('Cần chọn môn và câu hỏi hợp lệ.', 'warn')
     setSaving(true)
     try {
       const r = await api.bulkQuestions(qs)
       toast(`Đã lưu ${r.inserted ?? qs.length} câu vào ngân hàng.`)
-      setPreview(null); goManual('bank')
-    } catch (e) { toast(errMsg(e), 'err') }
-    setSaving(false)
-  }
-
-  const saveCloze = async () => {
-    // diem_khuyet van luu vao bank questions
-    const qs = (preview?.questions || []).map((q) => ({
-      subject_id: form.subject_id, topic_id: form.topic_id || null,
-      grade: 12, difficulty: 'nhận biết', qtype: 'diem_khuyet',
-      content: q.content, options: [],
-      correct_answer: q.correct_answer || '', explanation: '',
-      score: 1, source: 'ai',
-    })).filter((q) => q.content && q.subject_id)
-    if (!qs.length) return toast('Cần chọn môn + câu hỏi hợp lệ.', 'warn')
-    setSaving(true)
-    try {
-      const r = await api.bulkQuestions(qs)
-      toast(`Đã lưu ${r.inserted ?? qs.length} câu cloze.`)
-      setPreview(null); goManual('bank')
+      setPreview(null); setPhase('idle'); setRaw(''); goTab('import')
     } catch (e) { toast(errMsg(e), 'err') }
     setSaving(false)
   }
@@ -182,39 +196,29 @@ function StepAI({ goManual }) {
     if (!preview?.content && !preview?.title) return toast('Chưa có nội dung.', 'warn')
     setSaving(true)
     try {
-      await api.createLesson({
-        topic_id: form.topic_id,
-        title: preview.title || form.topic,
-        content: preview.content || '',
-      })
+      await api.createLesson({ topic_id: form.topic_id, title: preview.title || form.topic, content: preview.content || '' })
       toast('Đã lưu bài học.')
-      setPreview(null); goManual('lesson')
+      setPreview(null); setPhase('idle'); goTab('lesson')
     } catch (e) { toast(errMsg(e), 'err') }
     setSaving(false)
   }
 
   const saveFlashcards = async () => {
-    if (!form.topic_id) return toast('Chọn chuyên đề để gắn flashcard.', 'warn')
+    if (!form.topic_id) return toast('Chọn chuyên đề để gắn thẻ nhớ.', 'warn')
     const cards = (preview?.cards || []).filter((c) => c.front)
     if (!cards.length) return toast('Không có thẻ hợp lệ.', 'warn')
     setSaving(true)
     try {
       const r = await api.createFlashcards({ topic_id: form.topic_id, cards })
-      toast(`Đã lưu ${r.inserted} thẻ flashcard.`)
-      setPreview(null)
+      toast(`Đã lưu ${r.inserted} thẻ.`)
+      setPreview(null); setPhase('idle')
     } catch (e) { toast(errMsg(e), 'err') }
     setSaving(false)
   }
 
   const saveExam = async () => {
     if (!form.subject_id) return toast('Chọn môn.', 'warn')
-    const qs = (preview?.questions || []).map((q) => ({
-      subject_id: form.subject_id, topic_id: form.topic_id || null,
-      grade: 12, difficulty: form.difficulty, qtype: 'trac_nghiem',
-      content: q.content, options: q.options || [],
-      correct_answer: q.correct_answer || '', explanation: q.explanation || '',
-      score: 1, source: 'ai',
-    })).filter((q) => q.content)
+    const qs = bankFrom('trac_nghiem').map((q) => ({ ...q, qtype: 'trac_nghiem' }))
     if (!qs.length) return toast('Không có câu hỏi.', 'warn')
     setSaving(true)
     try {
@@ -224,182 +228,229 @@ function StepAI({ goManual }) {
         if (r?.id) ids.push(r.id)
       }
       await api.createExam({
-        title: preview.title || `Đề ${form.topic || 'AI'}`,
-        mode: 'shared', duration_min: 45, question_ids: ids,
+        title: preview?.title || `Đề ${form.topic}`, mode: 'shared',
+        duration_min: 45, question_ids: ids,
       })
-      toast(`Đã publish đề ${ids.length} câu (shared).`)
-      setPreview(null); goManual('exam')
+      toast(`Đã công bố đề ${ids.length} câu.`)
+      setPreview(null); setPhase('idle'); goTab('exam')
     } catch (e) { toast(errMsg(e), 'err') }
     setSaving(false)
   }
 
   const t = form.type
+  const streaming = phase === 'streaming'
   const hasSubjects = subjects.length > 0
+  const statusText =
+    phase === 'streaming' ? 'đang viết…' :
+    phase === 'done' ? 'đã xong' :
+    phase === 'error' ? 'dừng vì lỗi' : ''
 
   return (
-    <div className="grid">
-      <div className="card">
-        <div className="row spread">
-          <h3 style={{ margin: 0 }}>🤖 Sinh nội dung bằng AI</h3>
-          <span className="badge">Agnes AI · OpenAI-compatible</span>
-        </div>
-        <div className="small muted" style={{ marginTop: 4 }}>
-          Chọn loại nội dung → mô tả chủ đề → AI trả JSON → bạn duyệt preview rồi Lưu.
-        </div>
-
-        <div className="row" style={{ marginTop: 12, gap: 8 }}>
-          <select className="select" style={{ flex: 1, minWidth: 160 }} value={t}
-            onChange={(e) => { setForm({ ...form, type: e.target.value }); setPreview(null) }}>
-            {AI_TYPES.map((x) => <option key={x.id} value={x.id}>{x.label} — {x.hint}</option>)}
-          </select>
-          <select className="select" style={{ flex: 1, minWidth: 160 }} value={form.model}
-            onChange={(e) => setForm({ ...form, model: e.target.value })}>
-            {AI_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
-        </div>
-
-        <div className="grid c3" style={{ marginTop: 8 }}>
-          <div>
-            <label className="lbl">Môn *</label>
-            <select className="select" value={form.subject_id} onChange={(e) => pickSubject(e.target.value)}>
-              <option value="">— Chọn —</option>
-              {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+    <div className="workbench">
+      {/* ——— cột trái: bảng nhập ——— */}
+      <div className="bench-form">
+        <fieldset className="bench-fieldset">
+          <legend>Loại nội dung</legend>
+          <div className="kind-row" role="radiogroup" aria-label="Loại nội dung">
+            {AI_TYPES.map((x) => (
+              <button key={x.id} type="button" role="radio" aria-checked={t === x.id}
+                className={`kind${t === x.id ? ' on' : ''}`}
+                onClick={() => { setForm({ ...form, type: x.id }); setPreview(null) }}>
+                <span className="kind-name">{x.label}</span>
+                <span className="kind-hint">{x.hint}</span>
+              </button>
+            ))}
           </div>
-          <div>
-            <label className="lbl">Chuyên đề (gắn khi lưu)</label>
-            <select className="select" value={form.topic_id} onChange={(e) => pickTopic(e.target.value)}>
-              <option value="">— Chọn —</option>
-              {topics.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="lbl">Số lượng</label>
-            <input className="input" type="number" min="1" max="30" value={form.count}
-              onChange={(e) => setForm({ ...form, count: e.target.value })} />
-          </div>
-        </div>
+        </fieldset>
 
-        <label className="lbl">Chủ đề / đề bài *</label>
-        <input className="input" placeholder="VD: Dao động điều hòa, họ Ankyl…" value={form.topic}
-          onChange={(e) => setForm({ ...form, topic: e.target.value })} />
-
-        {(t === 'questions' || t === 'exam') && (
-          <div className="grid c2" style={{ marginTop: 8 }}>
-            <div>
-              <label className="lbl">Độ khó</label>
-              <select className="select" value={form.difficulty} onChange={(e) => setForm({ ...form, difficulty: e.target.value })}>
-                <option>nhận biết</option><option>thông hiểu</option><option>vận dụng</option><option>vận dụng cao</option>
+        <fieldset className="bench-fieldset">
+          <legend>Gắn vào</legend>
+          <div className="bench-row3">
+            <label className="bench-label">
+              <span>Môn</span>
+              <select className="select" value={form.subject_id} onChange={(e) => pickSubject(e.target.value)}>
+                <option value="">chọn…</option>
+                {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
-            </div>
+            </label>
+            <label className="bench-label">
+              <span>Chuyên đề</span>
+              <select className="select" value={form.topic_id} onChange={(e) => pickTopic(e.target.value)}>
+                <option value="">—</option>
+                {topics.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+              </select>
+            </label>
+            <label className="bench-label">
+              <span>Số</span>
+              <input className="input" type="number" min="1" max="30" value={form.count}
+                onChange={(e) => setForm({ ...form, count: e.target.value })} />
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset className="bench-fieldset">
+          <legend>Đề bài</legend>
+          <input className="input bench-topic" value={form.topic}
+            placeholder="Dao động điều hòa, họ Ankyl, bảo vệ rừng…"
+            onChange={(e) => setForm({ ...form, topic: e.target.value })} />
+          <div className="bench-row2">
+            {(t === 'questions' || t === 'exam') && (
+              <label className="bench-label">
+                <span>Độ khó</span>
+                <select className="select" value={form.difficulty} onChange={(e) => setForm({ ...form, difficulty: e.target.value })}>
+                  <option>nhận biết</option><option>thông hiểu</option><option>vận dụng</option><option>vận dụng cao</option>
+                </select>
+              </label>
+            )}
             {t === 'questions' && (
-              <div>
-                <label className="lbl">Loại câu</label>
+              <label className="bench-label">
+                <span>Dạng câu</span>
                 <select className="select" value={form.qtype} onChange={(e) => setForm({ ...form, qtype: e.target.value })}>
                   <option value="trac_nghiem">Trắc nghiệm</option>
                   <option value="tu_luan">Tự luận</option>
-                  <option value="diem_khuyet">Điền từ (cloze)</option>
+                  <option value="diem_khuyet">Điền từ</option>
                 </select>
-              </div>
+              </label>
             )}
+            <label className="bench-label">
+              <span>Mô hình</span>
+              <select className="select" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })}>
+                {AI_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </select>
+            </label>
           </div>
-        )}
+          <label className="bench-label" style={{ marginTop: 10 }}>
+            <span>Yêu cầu thêm (không bắt buộc)</span>
+            <textarea className="textarea" style={{ minHeight: 56 }}
+              placeholder="VD: ưu tiên ví dụ nông nghiệp, 4 phương án…"
+              value={form.prompt} onChange={(e) => setForm({ ...form, prompt: e.target.value })} />
+          </label>
+        </fieldset>
 
-        <label className="lbl">Yêu cầu thêm (tùy chọn)</label>
-        <textarea className="textarea" style={{ minHeight: 60 }} placeholder="VD: ưu tiên ví dụ thực tế nông nghiệp, 4 phương án…" value={form.prompt}
-          onChange={(e) => setForm({ ...form, prompt: e.target.value })} />
-
-        <div className="row" style={{ marginTop: 12 }}>
-          <button className="btn primary" onClick={generate} disabled={busy || !hasSubjects}>
-            <IconWand className="icn sm" />{busy ? 'AI đang suy nghĩ…' : 'Sinh nội dung'}
-          </button>
-          {!hasSubjects && <span className="small muted">Chưa có môn học — kiểm tra seed.</span>}
+        <div className="bench-actions">
+          {!streaming ? (
+            <button className="btn primary bench-go" onClick={generate} disabled={!hasSubjects}>
+              <IconWand className="icn sm" />Soạn
+            </button>
+          ) : (
+            <button className="btn danger bench-go" onClick={stop}>
+              <IconX className="icn sm" />Dừng
+            </button>
+          )}
+          {!hasSubjects && <span className="bench-note">Chưa có môn học trong hệ thống.</span>}
         </div>
       </div>
 
-      {preview && (
-        <div className="card">
-          <h3 style={{ marginTop: 0 }}>Xem trước — kiểm tra rồi Lưu</h3>
-
-          {/* flashcards */}
-          {(preview.cards || preview.front) && (
-            <div>
-              {(preview.cards || [preview]).map((c, i) => (
-                <div key={i} className="board-row">
-                  <b>F{i + 1}</b>
-                  <div style={{ flex: 1 }}>
-                    <div>{c.front}</div>
-                    <div className="small muted">{c.back}</div>
-                  </div>
-                </div>
-              ))}
-              <div className="row" style={{ marginTop: 10 }}>
-                <button className="btn primary" onClick={saveFlashcards} disabled={saving}>
-                  {saving ? 'Đang lưu…' : `Lưu ${preview.cards?.length || 0} thẻ`}
-                </button>
-                <button className="btn" onClick={() => setPreview(null)}>Bỏ qua</button>
-              </div>
-            </div>
-          )}
-
-          {/* lesson */}
-          {(preview.content && !preview.questions && !preview.cards) && (
-            <div>
-              <b>{preview.title || form.topic}</b>
-              <div style={{ whiteSpace: 'pre-wrap', marginTop: 8, fontSize: 14, lineHeight: 1.65 }}>{preview.content}</div>
-              <div className="row" style={{ marginTop: 10 }}>
-                <button className="btn primary" onClick={saveLesson} disabled={saving}>
-                  {saving ? 'Đang lưu…' : 'Lưu bài học'}
-                </button>
-                <button className="btn" onClick={() => setPreview(null)}>Bỏ qua</button>
-              </div>
-            </div>
-          )}
-
-          {/* questions / exam / cloze */}
-          {(preview.questions || preview.title) && !preview.cards && !preview.content && (
-            <div>
-              {preview.title && <div className="small muted">Đề: <b>{preview.title}</b></div>}
-              <table className="tbl" style={{ marginTop: 8 }}>
-                <thead><tr><th>#</th><th>Câu hỏi</th><th>Đáp án</th></tr></thead>
-                <tbody>
-                  {(preview.questions || []).map((q, i) => (
-                    <tr key={i}>
-                      <td>{i + 1}</td>
-                      <td style={{ whiteSpace: 'pre-wrap' }}>{q.content}</td>
-                      <td className="small">
-                        {q.options ? (q.options.join(' · ') + (q.correct_answer ? ` → ${q.correct_answer}` : '')) : q.correct_answer}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="row" style={{ marginTop: 10 }}>
-                {t === 'exam' ? (
-                  <button className="btn primary" onClick={saveExam} disabled={saving}>
-                    {saving ? 'Đang lưu…' : 'Lưu đề thi (shared)'}
-                  </button>
-                ) : t === 'cloze' || form.qtype === 'diem_khuyet' ? (
-                  <button className="btn primary" onClick={saveCloze} disabled={saving}>
-                    {saving ? 'Đang lưu…' : 'Lưu cloze vào ngân hàng'}
-                  </button>
-                ) : (
-                  <button className="btn primary" onClick={saveQuestions} disabled={saving}>
-                    {saving ? 'Đang lưu…' : `Lưu ${(preview.questions || []).length} câu vào ngân hàng`}
-                  </button>
-                )}
-                <button className="btn" onClick={() => setPreview(null)}>Bỏ qua</button>
-                <button className="btn" onClick={generate} disabled={busy}>Sinh lại</button>
-              </div>
-            </div>
-          )}
-
-          {/* fallback weird shape */}
-          {!preview.cards && !preview.questions && !preview.content && !preview.title && (
-            <pre className="code">{JSON.stringify(preview, null, 2).slice(0, 2000)}</pre>
-          )}
+      {/* ——— cột phải: khung soạn (stream + duyệt) ——— */}
+      <div className="bench-canvas" aria-live="polite">
+        <div className="canvas-bar">
+          <span className={`canvas-dot${streaming ? ' live' : phase === 'done' ? ' ok' : phase === 'error' ? ' bad' : ''}`} />
+          <span className="canvas-status">
+            {statusText || 'khung soạn'}
+          </span>
+          {streaming && <span className="canvas-meta">{raw.length.toLocaleString('vi-VN')} ký tự</span>}
+          {previewMeta && phase === 'done' && <span className="canvas-meta">{previewMeta.model}</span>}
         </div>
-      )}
+
+        {phase === 'idle' && !preview && (
+          <div className="canvas-empty">
+            Chưa có bản nháp.<br />
+            Chọn loại bên trái, gõ đề bài, bấm <b>Soạn</b>.
+          </div>
+        )}
+
+        {(streaming || (phase !== 'done' && raw)) && !preview && (
+          <pre className="canvas-draft">{raw}{streaming && <span className="caret" aria-hidden="true" />}</pre>
+        )}
+
+        {phase === 'error' && !preview && raw && (
+          <pre className="canvas-draft muted">{raw}</pre>
+        )}
+
+        {preview && (
+          <div className="canvas-result">
+            <div className="result-head">
+              <h3>Duyệt trước khi lưu</h3>
+              <div className="row">
+                <button className="btn" onClick={() => { setPreview(null); setPhase('idle'); generate() }} disabled={streaming}>Soạn lại</button>
+                <button className="btn" onClick={() => { setPreview(null); setPhase('idle'); setRaw(''); rawRef.current = '' }}>Bỏ</button>
+              </div>
+            </div>
+
+            {preview.cards && (
+              <div className="result-body">
+                {preview.cards.filter((c) => c.front).map((c, i) => (
+                  <div key={i} className="flip-row">
+                    <span className="flip-n">{i + 1}</span>
+                    <div>
+                      <div className="flip-front">{c.front}</div>
+                      <div className="flip-back">{c.back}</div>
+                    </div>
+                  </div>
+                ))}
+                <div className="row" style={{ marginTop: 14 }}>
+                  <button className="btn primary" onClick={saveFlashcards} disabled={saving}>
+                    {saving ? 'Đang lưu…' : `Lưu ${preview.cards.length} thẻ`}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {preview.content && !preview.questions && !preview.cards && (
+              <div className="result-body">
+                <b className="lesson-title">{preview.title || form.topic}</b>
+                <div className="lesson-body">{preview.content}</div>
+                <div className="row" style={{ marginTop: 14 }}>
+                  <button className="btn primary" onClick={saveLesson} disabled={saving}>
+                    {saving ? 'Đang lưu…' : 'Lưu bài học'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {(preview.questions || preview.title) && !preview.cards && !preview.content && (
+              <div className="result-body">
+                {preview.title && <div className="exam-title">{preview.title}</div>}
+                <table className="tbl result-tbl">
+                  <thead><tr><th style={{ width: 36 }}>#</th><th>Câu hỏi</th><th style={{ width: '32%' }}>Đáp án</th></tr></thead>
+                  <tbody>
+                    {(preview.questions || []).map((q, i) => (
+                      <tr key={i}>
+                        <td>{i + 1}</td>
+                        <td style={{ whiteSpace: 'pre-wrap' }}>{q.content}</td>
+                        <td className="small">
+                          {q.options?.length
+                            ? <>{q.options.join(' · ')}{q.correct_answer ? <> → <b>{q.correct_answer}</b></> : null}</>
+                            : <b>{q.correct_answer}</b>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="row" style={{ marginTop: 14 }}>
+                  {t === 'exam' ? (
+                    <button className="btn primary" onClick={saveExam} disabled={saving}>
+                      {saving ? 'Đang lưu…' : 'Công bố đề'}
+                    </button>
+                  ) : t === 'cloze' || form.qtype === 'diem_khuyet' ? (
+                    <button className="btn primary" onClick={() => saveQuestions('diem_khuyet')} disabled={saving}>
+                      {saving ? 'Đang lưu…' : 'Lưu câu điền từ'}
+                    </button>
+                  ) : (
+                    <button className="btn primary" onClick={() => saveQuestions(form.qtype)} disabled={saving}>
+                      {saving ? 'Đang lưu…' : `Lưu ${(preview.questions || []).length} câu`}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!preview.cards && !preview.questions && !preview.content && !preview.title && (
+              <pre className="canvas-draft">{JSON.stringify(preview, null, 2).slice(0, 2400)}</pre>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

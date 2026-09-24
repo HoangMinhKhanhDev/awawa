@@ -187,6 +187,38 @@ const mvpMethods = (call, qs) => ({
   reviewFlashcard: (id, quality) => call(`/flashcards/${id}/review`, { method: 'POST', body: JSON.stringify({ quality }) }),
 })
 
+// Streaming SSE AI — url: day du endpoint (legacy va php khac nhau prefix)
+async function aiStream(url, payload, onEvent, signal) {
+  const headers = { 'Content-Type': 'application/json', ...sessionHeaders() }
+  if (PHP_TOKEN) headers['X-Api-Token'] = PHP_TOKEN
+  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal })
+  if (!res.ok) {
+    const t = await res.text().catch(() => '')
+    throw new Error(`API ${res.status}: ${t.slice(0, 300)}`)
+  }
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    let idx
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const block = buf.slice(0, idx)
+      buf = buf.slice(idx + 2)
+      let ev = 'message'
+      let data = ''
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) ev = line.slice(6).trim()
+        else if (line.startsWith('data:')) data += line.slice(5).trim()
+      }
+      if (!data) continue
+      try { onEvent({ event: ev, data: JSON.parse(data) }) } catch { /* skip bad json */ }
+    }
+  }
+}
+
 async function req(path, options = {}) {
   const base = await getBackendUrlLegacy()
   const extra = /ngrok/i.test(base) ? { 'ngrok-skip-browser-warning': 'true' } : {}
@@ -321,6 +353,10 @@ const legacyApi = {
     return res.json()
   },
   bulkQuestions: (items) => req('/api/questions/bulk', { method: 'POST', body: JSON.stringify({ items }) }),
+  aiGenerateStream: (payload, onEvent, signal) => (async () => {
+    const base = await getBackendUrlLegacy()
+    await aiStream(`${base}/api/ai/generate-stream`, payload, onEvent, signal)
+  })(),
   materials: (params = {}) => {
     const q = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null) q.append(k, v) })
@@ -467,6 +503,7 @@ const phpApi = {
     return r.url
   },
   bulkQuestions: (items) => preq('/questions/bulk', { method: 'POST', body: JSON.stringify({ items }) }),
+  aiGenerateStream: (payload, onEvent, signal) => aiStream(`${PHP_BASE}/ai/generate-stream`, payload, onEvent, signal),
 }
 
 // ================= EXPORTS =================

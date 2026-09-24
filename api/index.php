@@ -1718,20 +1718,15 @@ if ($path === '/stats/team-timeline' && $method === 'GET') {
 }
 
 // ---------------- AI (Agnes) ----------------
-// POST /ai/generate — sinh noi dung bang AI. Chi GV/admin. Key chi o server.
-if ($path === '/ai/generate' && $method === 'POST') {
-    require_teacher();
-    $b = body();
+// Xay dung system+user messages cho 5 type. Dung chung cho generate va stream.
+function ai_build_messages($b) {
     $type = trim($b['type'] ?? '');
-    $model = trim($b['model'] ?? '');
-    if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze'), true)) jerr('type khong hop le.');
     $topic = mb_substr(trim($b['topic'] ?? ''), 0, 200);
     $subject = mb_substr(trim($b['subject'] ?? ''), 0, 200);
     $extra = mb_substr(trim($b['prompt'] ?? ''), 0, 1000);
     $count = max(1, min((int)($b['count'] ?? 5), 30));
     $difficulty = trim($b['difficulty'] ?? 'vận dụng');
     $qtype = in_array($b['qtype'] ?? '', array('trac_nghiem', 'tu_luan', 'dung_sai', 'diem_khuyet'), true) ? $b['qtype'] : 'trac_nghiem';
-
     $sys = 'Ban la AI giao vien mon hoc. Tra ve JSON THUAN, khong giai thich, khong markdown fence.';
     $user = '';
     $want = '';
@@ -1757,20 +1752,62 @@ if ($path === '/ai/generate' && $method === 'POST') {
         $want = '{"cards":[{"front":"cau hoi/ngu canh","back":"dap an/ngan gon"}]}';
         $user = "Tao {$count} flashcard cho '{$topic}' mon '{$subject}'. Front ngan hoi, back dap an ro rang, tieng Viet.{$extra}";
     }
+    return array(
+        'messages' => array(
+            array('role' => 'system', 'content' => $sys),
+            array('role' => 'user', 'content' => $user . " JSON format: " . $want),
+        ),
+        'type' => $type,
+        'model' => trim($b['model'] ?? ''),
+    );
+}
 
-    $raw = agnes_chat(array(
-        array('role' => 'system', 'content' => $sys),
-        array('role' => 'user', 'content' => $user . " JSON format: " . $want),
-    ), $model, 4000, 0.4);
+function ai_normalize($type, $parsed) {
+    if ($type === 'flashcards' && isset($parsed['cards'])) return $parsed;
+    if (($type === 'questions' || $type === 'cloze') && isset($parsed['questions'])) return array('questions' => $parsed['questions']);
+    return $parsed;
+}
+
+// POST /ai/generate — blocking (du lieu JSON day du).
+if ($path === '/ai/generate' && $method === 'POST') {
+    require_teacher();
+    $b = body();
+    $type = trim($b['type'] ?? '');
+    if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze'), true)) jerr('type khong hop le.');
+    $built = ai_build_messages($b);
+    $raw = agnes_chat($built['messages'], $built['model'], 4000, 0.4);
     $parsed = agnes_parse_json($raw);
     if ($parsed === null) jerr('AI khong tra JSON hop le. Thu lai hoac doi model.', 502);
-    // Chuẩn hoa schema
-    if ($type === 'flashcards' && isset($parsed['cards'])) $out = $parsed;
-    elseif (($type === 'questions' || $type === 'cloze') && isset($parsed['questions'])) $out = array('questions' => $parsed['questions']);
-    elseif ($type === 'exam') $out = $parsed;
-    elseif ($type === 'lesson') $out = $parsed;
-    else $out = $parsed;
-    j(array('type' => $type, 'model' => $model ?: AGNES_DEFAULT_MODEL, 'data' => $out));
+    j(array('type' => $type, 'model' => $built['model'] ?: AGNES_DEFAULT_MODEL, 'data' => ai_normalize($type, $parsed)));
+}
+
+// POST /ai/generate-stream — SSE: delta... rồi result/error. Hien realtime o client.
+if ($path === '/ai/generate-stream' && $method === 'POST') {
+    require_teacher();
+    $b = body();
+    $type = trim($b['type'] ?? '');
+    if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze'), true)) jerr('type khong hop le.');
+    $built = ai_build_messages($b);
+    header('Content-Type: text/event-stream; charset=utf-8');
+    header('Cache-Control: no-cache');
+    header('X-Accel-Buffering: no');
+    if (function_exists('ob_end_flush')) { @ob_end_flush(); }
+    @ini_set('zlib.output_compression', '0');
+    $emit = function ($event, $data) {
+        echo 'event: ' . $event . "\n";
+        echo 'data: ' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n\n";
+        if (function_exists('flush')) flush();
+    };
+    $emit('meta', array('type' => $type, 'model' => $built['model'] ?: AGNES_DEFAULT_MODEL));
+    $raw = agnes_chat_stream($built['messages'], $built['model'], $emit, 4000, 0.4);
+    if ($raw === null) { exit; } // error da gui
+    $parsed = agnes_parse_json($raw);
+    if ($parsed === null) {
+        $emit('error', array('message' => 'AI khong tra JSON hop le. Thu lai hoac doi model.'));
+        exit;
+    }
+    $emit('result', array('type' => $type, 'model' => $built['model'] ?: AGNES_DEFAULT_MODEL, 'data' => ai_normalize($type, $parsed)));
+    exit;
 }
 
 // ---------------- FLASHCARDS ----------------

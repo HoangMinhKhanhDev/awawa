@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from auth import optional_session, require_teacher
@@ -104,19 +105,14 @@ def parse_json(text: str):
     return None
 
 
-@router.post("/api/ai/generate")
-def ai_generate(payload: AiGenIn, request: Request):
-    require_teacher(request)
+def build_messages(payload: AiGenIn):
     t = (payload.type or "").strip()
-    if t not in ("questions", "lesson", "exam", "flashcards", "cloze"):
-        raise HTTPException(400, "type khong hop le.")
     topic = (payload.topic or "").strip()[:200]
     subject = (payload.subject or "").strip()[:200]
     extra = (payload.prompt or "").strip()[:1000]
     count = max(1, min(int(payload.count or 5), 30))
     difficulty = payload.difficulty or "van dung"
     qtype = payload.qtype if payload.qtype in ("trac_nghiem", "tu_luan", "dung_sai", "diem_khuyet") else "trac_nghiem"
-
     sys_msg = "Ban la AI giao vien mon hoc. Tra ve JSON THUAN, khong giai thich, khong markdown fence."
     if t in ("questions", "cloze"):
         if t == "cloze" or qtype == "diem_khuyet":
@@ -136,11 +132,123 @@ def ai_generate(payload: AiGenIn, request: Request):
     else:
         want = '{"cards":[{"front":"...","back":"..."}]}'
         user = f"Tao {count} flashcard cho '{topic}' mon '{subject}'. Front ngan, back ro rang, tieng Viet. {extra}"
+    return {
+        "messages": [
+            {"role": "system", "content": sys_msg},
+            {"role": "user", "content": user + " JSON format: " + want},
+        ],
+        "type": t,
+        "model": payload.model,
+    }
 
-    raw = agnes_chat([
-        {"role": "system", "content": sys_msg},
-        {"role": "user", "content": user + " JSON format: " + want},
-    ], payload.model, 4000, 0.4)
+
+def agnes_chat_stream(messages, model=""):
+    """Yield delta text chunks; finally yield a marker then full text via generator pattern.
+    Returns generator of (kind, payload): ('delta', str) | ('error', str) | ('done', str)."""
+    if not AGNES_KEY:
+        yield ("error", "AI chua cau hinh (thieu AGNES_API_KEY).")
+        return
+    if model not in MODELS:
+        model = AGNES_DEFAULT
+    body = json.dumps({
+        "model": model,
+        "messages": messages,
+        "temperature": 0.4,
+        "max_tokens": 4000,
+        "stream": True,
+    }, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        AGNES_BASE + "/chat/completions",
+        data=body,
+        headers={
+            "Authorization": "Bearer " + AGNES_KEY,
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+        method="POST",
+    )
+    full = ""
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    j = json.loads(data)
+                except Exception:
+                    continue
+                delta = ""
+                try:
+                    delta = j["choices"][0]["delta"].get("content") or ""
+                except Exception:
+                    pass
+                if delta:
+                    full += delta
+                    yield ("delta", delta)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        yield ("error", f"AI loi {e.code}: {detail}")
+        return
+    except Exception as e:
+        yield ("error", f"AI loi mang: {e}")
+        return
+    if not full:
+        yield ("error", "AI khong tra ve noi dung.")
+        return
+    yield ("done", full)
+
+
+def sse(event: str, data) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post("/api/ai/generate-stream")
+def ai_generate_stream(payload: AiGenIn, request: Request):
+    require_teacher(request)
+    t = (payload.type or "").strip()
+    if t not in ("questions", "lesson", "exam", "flashcards", "cloze"):
+        raise HTTPException(400, "type khong hop le.")
+    built = build_messages(payload)
+    model = payload.model or AGNES_DEFAULT
+
+    def gen():
+        yield sse("meta", {"type": t, "model": model})
+        full = None
+        for kind, val in agnes_chat_stream(built["messages"], payload.model):
+            if kind == "delta":
+                yield sse("delta", {"text": val})
+            elif kind == "error":
+                yield sse("error", {"message": val})
+                return
+            elif kind == "done":
+                full = val
+        if not full:
+            yield sse("error", {"message": "AI khong tra ve noi dung."})
+            return
+        parsed = parse_json(full)
+        if parsed is None:
+            yield sse("error", {"message": "AI khong tra JSON hop le."})
+            return
+        yield sse("result", {"type": t, "model": model, "data": parsed})
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
+
+
+@router.post("/api/ai/generate")
+def ai_generate(payload: AiGenIn, request: Request):
+    require_teacher(request)
+    t = (payload.type or "").strip()
+    if t not in ("questions", "lesson", "exam", "flashcards", "cloze"):
+        raise HTTPException(400, "type khong hop le.")
+    built = build_messages(payload)
+    raw = agnes_chat(built["messages"], payload.model, 4000, 0.4)
     parsed = parse_json(raw)
     if parsed is None:
         raise HTTPException(502, "AI khong tra JSON hop le.")
