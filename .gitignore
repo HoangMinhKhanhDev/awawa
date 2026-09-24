@@ -21,3 +21,5 @@ docs/tmp/
 scripts/server-local.php
 scripts/*-payload.json
 scripts/hostinger-call.cjs.bak
+scripts/debug-*.php
+scripts/tus.json
