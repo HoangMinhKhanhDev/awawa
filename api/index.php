@@ -367,12 +367,15 @@ if (preg_match('#^/questions/(\d+)$#', $path, $m)) {
 // ---------------- EXAMS ----------------
 if ($method === 'POST' && $path === '/exams') {
     $b = body();
+    $mode = $b['mode'] ?? 'practice';
+    // De "shared" (dung trong Studio) chi GV+admin; practice/exam HS tu tao khi lam bai
+    if ($mode === 'shared') require_teacher();
     db()->prepare('INSERT INTO exams (title, mode, duration_min, question_ids) VALUES (?,?,?,?)')
         ->execute(array(
-            $b['title'] ?? 'Đề', $b['mode'] ?? 'practice', (int)($b['duration_min'] ?? 45),
+            $b['title'] ?? 'Đề', $mode, (int)($b['duration_min'] ?? 45),
             json_encode($b['question_ids'] ?? array(), JSON_UNESCAPED_UNICODE),
         ));
-    j(array('id' => (int)db()->lastInsertId(), 'title' => $b['title'] ?? 'Đề', 'mode' => $b['mode'] ?? 'practice'));
+    j(array('id' => (int)db()->lastInsertId(), 'title' => $b['title'] ?? 'Đề', 'mode' => $mode));
 }
 
 if ($method === 'GET' && $path === '/exams') {
@@ -436,6 +439,28 @@ if ($method === 'POST' && preg_match('#^/exams/(\d+)/submit$#', $path, $m)) {
             $ua = mb_strtoupper(trim($a['user_answer'] ?? ''));
             $ca = mb_strtoupper(trim($qr['correct_answer'] ?? ''));
             $ok = ($ua !== '' && $ua === $ca);
+            if ($ok) $correct++;
+            $a['is_correct'] = $ok;
+        } elseif ($qr['qtype'] === 'diem_khuyet') {
+            // Cloze: user_answer co the la array [{blank,text}] hoac string "a,b"
+            $content = q_one('SELECT content FROM questions WHERE id=?', array($qid));
+            $g = grade_cloze($content['content'] ?? '', $qr['correct_answer'] ?? '', $a['user_answer'] ?? '');
+            if ($g) {
+                $total += $g['total'];
+                $correct += $g['correct'];
+                $a['is_correct'] = ($g['correct'] >= $g['total']);
+                $a['cloze'] = $g['detail'];
+            } else {
+                $a['is_correct'] = null;
+            }
+        } elseif ($qr['qtype'] === 'dung_sai') {
+            $total++;
+            $ua = mb_strtoupper(preg_replace('/\s+/', '', trim($a['user_answer'] ?? '')));
+            $ca = mb_strtoupper(preg_replace('/\s+/', '', trim($qr['correct_answer'] ?? '')));
+            $ok = ($ua !== '' && ($ua === $ca || $ua === 'DUNG' || $ua === 'SAI' || $ua === 'ĐÚNG' || $ua === 'SAI'));
+            if ($ua === 'DUNG' || $ua === 'ĐUNG') $ua = 'DUNG';
+            if ($ua === $ca || ($ca === 'DUNG' && ($ua === 'DUNG' || $ua === 'ĐÚNG')) || ($ca === 'SAI' && $ua === 'SAI')) $ok = true;
+            else $ok = ($ua !== '' && $ua === $ca);
             if ($ok) $correct++;
             $a['is_correct'] = $ok;
         } else {
@@ -1559,6 +1584,8 @@ if ($path === '/stats/class-overview' && $method === 'GET') {
 // ---------------- MATERIALS ----------------
 if ($path === '/materials') {
     if ($method === 'GET') {
+        $me = optional_session();
+        if (!$me) jerr('Chưa đăng nhập.', 401);
         $sql = 'SELECT * FROM materials WHERE 1=1';
         $p = array();
         if (!empty($_GET['subject_id'])) { $sql .= ' AND subject_id=?'; $p[] = $_GET['subject_id']; }
@@ -1688,6 +1715,141 @@ if ($path === '/stats/team-timeline' && $method === 'GET') {
     foreach ($graded as &$g) { $g['avg_score'] = $g['avg_score'] !== null ? (float)$g['avg_score'] : null; $g['n'] = (int)$g['n']; }
     unset($g);
     j(array('days' => $days, 'team' => $team, 'attempts' => $attempts, 'graded' => $graded));
+}
+
+// ---------------- AI (Agnes) ----------------
+// POST /ai/generate — sinh noi dung bang AI. Chi GV/admin. Key chi o server.
+if ($path === '/ai/generate' && $method === 'POST') {
+    require_teacher();
+    $b = body();
+    $type = trim($b['type'] ?? '');
+    $model = trim($b['model'] ?? '');
+    if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze'), true)) jerr('type khong hop le.');
+    $topic = mb_substr(trim($b['topic'] ?? ''), 0, 200);
+    $subject = mb_substr(trim($b['subject'] ?? ''), 0, 200);
+    $extra = mb_substr(trim($b['prompt'] ?? ''), 0, 1000);
+    $count = max(1, min((int)($b['count'] ?? 5), 30));
+    $difficulty = trim($b['difficulty'] ?? 'vận dụng');
+    $qtype = in_array($b['qtype'] ?? '', array('trac_nghiem', 'tu_luan', 'dung_sai', 'diem_khuyet'), true) ? $b['qtype'] : 'trac_nghiem';
+
+    $sys = 'Ban la AI giao vien mon hoc. Tra ve JSON THUAN, khong giai thich, khong markdown fence.';
+    $user = '';
+    $want = '';
+    if ($type === 'questions') {
+        $want = '{"questions":[{"content":"...","options":["A","B","C","D"]|null,"correct_answer":"A|B|C|D|text","explanation":"...","qtype":"trac_nghiem|tu_luan|dung_sai"}]}';
+        $user = "Tao {$count} cau hoi {$qtype} muc do {$difficulty} cho mon '{$subject}', chuyen de '{$topic}'."
+            . ($extra ? " Yeu cau: {$extra}." : '')
+            . " Truc nghiem: options 4 loi A-D, correct_answer la chu cai A/B/C/D. Van ban: correct_answer la dap an mau.";
+        if ($qtype === 'diem_khuyet') {
+            $want = '{"questions":[{"content":"Cau co ___ va {{tu thay}}","correct_answer":"dap_an|tu_thay"}]}';
+            $user = "Tao {$count} cau diem khuyet (cloze) cho '{$topic}'. Dung ___ hoac {{dap_an}} trong content. correct_answer cac dap an tach bang | theo thu tu blank.";
+        }
+    } elseif ($type === 'cloze') {
+        $want = '{"questions":[{"content":"...","correct_answer":"a|b"}]}';
+        $user = "Tao {$count} cau diem khuyet cho '{$topic}' mon '{$subject}'. Dung ___ hoac {{tu}} trong content, correct_answer tach bang | theo thu tu.{$extra}";
+    } elseif ($type === 'lesson') {
+        $want = '{"title":"...","content":"noi dung bai hoc, ngan gon co cau muc, vi du, cong thuc"}';
+        $user = "Viet bai hoc cho chuyen de '{$topic}' mon '{$subject}'. {$extra} Content 400-800 tu, co muc de doc, tieng Viet.";
+    } elseif ($type === 'exam') {
+        $want = '{"title":"...","questions":[{"content":"...","options":["A","B","C","D"],"correct_answer":"A","explanation":"..."}]}';
+        $user = "Tao de thi {$count} cau trac nghiem mon '{$subject}' chuyen de '{$topic}', do kho {$difficulty}.{$extra}";
+    } elseif ($type === 'flashcards') {
+        $want = '{"cards":[{"front":"cau hoi/ngu canh","back":"dap an/ngan gon"}]}';
+        $user = "Tao {$count} flashcard cho '{$topic}' mon '{$subject}'. Front ngan hoi, back dap an ro rang, tieng Viet.{$extra}";
+    }
+
+    $raw = agnes_chat(array(
+        array('role' => 'system', 'content' => $sys),
+        array('role' => 'user', 'content' => $user . " JSON format: " . $want),
+    ), $model, 4000, 0.4);
+    $parsed = agnes_parse_json($raw);
+    if ($parsed === null) jerr('AI khong tra JSON hop le. Thu lai hoac doi model.', 502);
+    // Chuẩn hoa schema
+    if ($type === 'flashcards' && isset($parsed['cards'])) $out = $parsed;
+    elseif (($type === 'questions' || $type === 'cloze') && isset($parsed['questions'])) $out = array('questions' => $parsed['questions']);
+    elseif ($type === 'exam') $out = $parsed;
+    elseif ($type === 'lesson') $out = $parsed;
+    else $out = $parsed;
+    j(array('type' => $type, 'model' => $model ?: AGNES_DEFAULT_MODEL, 'data' => $out));
+}
+
+// ---------------- FLASHCARDS ----------------
+if ($path === '/flashcards' && $method === 'GET') {
+    $me = optional_session();
+    if (!$me) jerr('Chưa đăng nhập.', 401);
+    $topicId = trim($_GET['topic_id'] ?? '');
+    if ($topicId === '') jerr('Thiếu topic_id.');
+    $cards = q_all('SELECT id, topic_id, lesson_id, front, back, idx FROM flashcards WHERE topic_id=? ORDER BY idx, id', array($topicId));
+    $isStaff = is_role_teacher($me);
+    if (!$isStaff) {
+        $prog = array();
+        foreach (q_all('SELECT card_id, box FROM flashcard_progress WHERE student_id=?', array($me['id'])) as $r) {
+            $prog[(int)$r['card_id']] = (int)$r['box'];
+        }
+        foreach ($cards as &$c) $c['box'] = $prog[(int)$c['id']] ?? 0;
+        unset($c);
+    }
+    j($cards);
+}
+
+if ($path === '/flashcards' && $method === 'POST') {
+    $me = require_teacher();
+    $b = body();
+    $topicId = trim($b['topic_id'] ?? '');
+    if ($topicId === '' || !q_one('SELECT 1 FROM topics WHERE id=?', array($topicId))) jerr('Thiếu/chưa đúng topic.');
+    $items = is_array($b['cards'] ?? null) ? $b['cards'] : array();
+    if (!$items) jerr('Thiếu cards.');
+    $n = 0;
+    $start = (int)q_one('SELECT COALESCE(MAX(idx),0) m FROM flashcards WHERE topic_id=?', array($topicId))['m'];
+    foreach ($items as $i => $c) {
+        $front = mb_substr(trim(is_string($c) ? $c : ($c['front'] ?? '')), 0, 1000);
+        $back = mb_substr(trim(is_string($c) ? '' : ($c['back'] ?? '')), 0, 4000);
+        if ($front === '') continue;
+        db()->prepare('INSERT INTO flashcards (topic_id, front, back, idx) VALUES (?,?,?,?)')
+            ->execute(array($topicId, $front, $back, $start + $n + 1));
+        $n++;
+    }
+    if ($n === 0) jerr('Không có thẻ hợp lệ.');
+    j(array('inserted' => $n));
+}
+
+if (preg_match('#^/flashcards/(\d+)$#', $path, $m)) {
+    $fid = (int)$m[1];
+    if ($method === 'PUT') {
+        require_teacher();
+        $b = body();
+        if (!q_one('SELECT 1 FROM flashcards WHERE id=?', array($fid))) jerr('Không tìm thấy thẻ.', 404);
+        db()->prepare('UPDATE flashcards SET front=?, back=? WHERE id=?')
+            ->execute(array(mb_substr(trim($b['front'] ?? ''), 0, 1000), mb_substr(trim($b['back'] ?? ''), 0, 4000), $fid));
+        j(array('ok' => true));
+    }
+    if ($method === 'DELETE') {
+        require_teacher();
+        db()->prepare('DELETE FROM flashcards WHERE id=?')->execute(array($fid));
+        j(array('ok' => true));
+    }
+}
+
+// Review Leitner don gian: quality 0 (khong nho), 1 (mo mo), 2 (nho) -> box 1..4
+if (preg_match('#^/flashcards/(\d+)/review$#', $path, $m)) {
+    if ($method !== 'POST') jerr('Không hỗ trợ.', 405);
+    $me = require_me();
+    if (is_role_teacher($me)) jerr('GV khong hoc flashcard.', 400);
+    $fid = (int)$m[1];
+    if (!q_one('SELECT 1 FROM flashcards WHERE id=?', array($fid))) jerr('Không tìm thấy thẻ.', 404);
+    $b = body();
+    $q = (int)($b['quality'] ?? 0);
+    if ($q < 0) $q = 0;
+    if ($q > 2) $q = 2;
+    $cur = q_one('SELECT box FROM flashcard_progress WHERE student_id=? AND card_id=?', array($me['id'], $fid));
+    $box = $cur ? (int)$cur['box'] : 1;
+    if ($q === 0) $box = 1;
+    elseif ($q === 1) $box = max(1, min(4, $box)); // mo mo: giu
+    else $box = min(4, $box + 1); // nho: tang box
+    db()->prepare('INSERT INTO flashcard_progress (student_id, card_id, box, last_reviewed_at) VALUES (?,?,?,NOW())
+        ON DUPLICATE KEY UPDATE box=VALUES(box), last_reviewed_at=VALUES(last_reviewed_at)')
+        ->execute(array($me['id'], $fid, $box));
+    j(array('card_id' => $fid, 'box' => $box));
 }
 
 jerr('Không tìm thấy API: ' . $path, 404);

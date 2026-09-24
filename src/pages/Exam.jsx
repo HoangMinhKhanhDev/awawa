@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { IconTimer, IconTrophy, IconPlay } from '../components/icons.jsx'
+import { ClozeText } from '../components/ClozeText.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 
@@ -95,12 +96,16 @@ export default function Exam() {
     detachFocus()
     const f = focusRef.current
     const details = qs.map((q) => {
-      const a = (answers[q.id] || '').trim()
+      const a = answers[q.id]
       if (q.qtype === 'trac_nghiem') {
-        const ok = a.toUpperCase() === (q.correct_answer || '').trim().toUpperCase()
-        return { question_id: q.id, user_answer: a, is_correct: ok }
+        const ok = String(a || '').trim().toUpperCase() === (q.correct_answer || '').trim().toUpperCase()
+        return { question_id: q.id, user_answer: String(a || '').trim(), is_correct: ok }
       }
-      return { question_id: q.id, user_answer: a, is_correct: null }
+      if (q.qtype === 'diem_khuyet') {
+        const ua = Array.isArray(a) ? a : []
+        return { question_id: q.id, user_answer: ua, is_correct: null }
+      }
+      return { question_id: q.id, user_answer: String(a || '').trim(), is_correct: null }
     })
     const payload = { answers: details, student_name: studentName, student_id: getSession().student?.id || null, focus_exits: f.exits, focus_log: f.log }
     let prevBest = 0
@@ -273,26 +278,48 @@ export default function Exam() {
 
       {exam && qs.map((q, i) => (
         <div className="card" key={q.id}>
-          <b>Câu {i + 1}</b>
-          <div style={{ whiteSpace: 'pre-wrap', margin: '8px 0' }}>{q.content}</div>
-          {q.image_url && <div style={{ margin: '0 0 10px' }}><img src={q.image_url} alt="minh họa" loading="lazy" /></div>}
-          {q.qtype === 'trac_nghiem' ? optsOf(q).map((o, k) => {
-            const L = 'ABCD'[k]
-            const picked = (answers[q.id] || '').toUpperCase() === L
-            let cls = 'opt' + (picked ? ' picked' : '')
-            if (result) {
-              if (L === (q.correct_answer || '').toUpperCase()) cls = 'opt right'
-              else if (picked) cls = 'opt wrong'
-            }
-            return <button key={k} type="button" className={cls} disabled={!!result} aria-pressed={picked} onClick={() => !result && setAnswers({ ...answers, [q.id]: L })}><b aria-hidden="true">{L}.</b> {o}</button>
-          }) : (
-            <>
-              <textarea className="textarea" value={answers[q.id] || ''} onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })} placeholder="Bài làm tự luận…" />
+          <b>Câu {i + 1}{q.qtype === 'diem_khuyet' ? ' — Điền từ' : ''}</b>
+          {q.qtype === 'diem_khuyet' ? (
+            <div style={{ margin: '8px 0' }}>
+              <ClozeText
+                content={q.content}
+                values={Array.isArray(answers[q.id]) ? answers[q.id] : []}
+                disabled={!!result}
+                onChange={(bi, val) => {
+                  const cur = Array.isArray(answers[q.id]) ? [...answers[q.id]] : []
+                  cur[bi] = val
+                  setAnswers({ ...answers, [q.id]: cur })
+                }}
+              />
               {result && (
                 <div className="answer-box" style={{ marginTop: 8 }}>
-                  <b>Đáp án tham khảo:</b> <span>{q.correct_answer}</span>
-                  {q.explanation && <><br /><b>Lời giải:</b> <span>{q.explanation}</span></>}
+                  <b>Đáp án:</b> <span>{(q.correct_answer || '').split('|').join(' / ')}</span>
                 </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <div style={{ whiteSpace: 'pre-wrap', margin: '8px 0' }}>{q.content}</div>
+              {q.image_url && <div style={{ margin: '0 0 10px' }}><img src={q.image_url} alt="minh họa" loading="lazy" /></div>}
+              {q.qtype === 'trac_nghiem' ? optsOf(q).map((o, k) => {
+                const L = 'ABCD'[k]
+                const picked = (answers[q.id] || '').toUpperCase() === L
+                let cls = 'opt' + (picked ? ' picked' : '')
+                if (result) {
+                  if (L === (q.correct_answer || '').toUpperCase()) cls = 'opt right'
+                  else if (picked) cls = 'opt wrong'
+                }
+                return <button key={k} type="button" className={cls} disabled={!!result} aria-pressed={picked} onClick={() => !result && setAnswers({ ...answers, [q.id]: L })}><b aria-hidden="true">{L}.</b> {o}</button>
+              }) : (
+                <>
+                  <textarea className="textarea" value={answers[q.id] || ''} onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })} placeholder="Bài làm tự luận…" />
+                  {result && (
+                    <div className="answer-box" style={{ marginTop: 8 }}>
+                      <b>Đáp án tham khảo:</b> <span>{q.correct_answer}</span>
+                      {q.explanation && <><br /><b>Lời giải:</b> <span>{q.explanation}</span></>}
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}

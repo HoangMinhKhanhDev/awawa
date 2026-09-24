@@ -120,38 +120,21 @@ CREATE TABLE IF NOT EXISTS lesson_completions (
   completed_at TEXT,
   PRIMARY KEY (student_id, lesson_id)
 );
-CREATE TABLE IF NOT EXISTS school_years (
+CREATE TABLE IF NOT EXISTS flashcards (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  start_date TEXT DEFAULT '',
-  end_date TEXT DEFAULT '',
-  is_current INTEGER DEFAULT 0,
+  topic_id TEXT,
+  lesson_id INTEGER,
+  front TEXT NOT NULL,
+  back TEXT DEFAULT '',
+  idx INTEGER NOT NULL DEFAULT 1,
   created_at TEXT
 );
-CREATE TABLE IF NOT EXISTS grades (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  school_year_id INTEGER,
-  name TEXT NOT NULL,
-  code TEXT DEFAULT '',
-  created_at TEXT
-);
-CREATE TABLE IF NOT EXISTS teams (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  school_year_id INTEGER,
-  grade_id INTEGER,
-  subject_id TEXT,
-  name TEXT NOT NULL,
-  description TEXT DEFAULT '',
-  created_at TEXT
-);
-CREATE TABLE IF NOT EXISTS team_members (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  team_id INTEGER NOT NULL,
-  user_id INTEGER NOT NULL,
-  member_role TEXT DEFAULT 'student',
-  joined_at TEXT,
-  left_at TEXT,
-  UNIQUE (team_id, user_id, member_role)
+CREATE TABLE IF NOT EXISTS flashcard_progress (
+  student_id INTEGER NOT NULL,
+  card_id INTEGER NOT NULL,
+  box INTEGER NOT NULL DEFAULT 1,
+  last_reviewed_at TEXT,
+  PRIMARY KEY (student_id, card_id)
 );
 """
 

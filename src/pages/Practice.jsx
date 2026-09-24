@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { IconPlay, IconTimer, IconAward } from '../components/icons.jsx'
+import { ClozeText } from '../components/ClozeText.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 
@@ -51,14 +52,18 @@ export default function Practice() {
     setFinishing(true)
     let correct = 0, totalMC = 0
     const details = qs.map((q) => {
-      const a = (answers[q.id] || '').trim()
+      const a = answers[q.id]
       if (q.qtype === 'trac_nghiem') {
+        const s = String(a || '').trim()
         totalMC += 1
-        const ok = a.toUpperCase() === (q.correct_answer || '').trim().toUpperCase()
+        const ok = s.toUpperCase() === (q.correct_answer || '').trim().toUpperCase()
         if (ok) correct += 1
-        return { question_id: q.id, user_answer: a, is_correct: ok }
+        return { question_id: q.id, user_answer: s, is_correct: ok }
       }
-      return { question_id: q.id, user_answer: a, is_correct: null, self_score: Number(selfScore[q.id] || 0) }
+      if (q.qtype === 'diem_khuyet') {
+        return { question_id: q.id, user_answer: Array.isArray(a) ? a : [], is_correct: null }
+      }
+      return { question_id: q.id, user_answer: String(a || '').trim(), is_correct: null, self_score: Number(selfScore[q.id] || 0) }
     })
     try {
       const r = await api.createExam({ title: 'Luyện chuyên đề', mode: 'practice', question_ids: qs.map((q) => q.id) }).then((ex) =>
@@ -124,7 +129,12 @@ export default function Practice() {
               <b>Câu {i + 1}</b>
               <span><span className="badge">{q.subject_name}</span><span className="badge">{q.topic_name || 'chung'}</span><span className="badge amber">{q.difficulty}</span></span>
             </div>
-            <div style={{ whiteSpace: 'pre-wrap', margin: '10px 0' }}>{q.content}</div>
+            <div style={{ whiteSpace: 'pre-wrap', margin: '10px 0' }}>
+              {q.qtype === 'diem_khuyet'
+                ? <ClozeText content={q.content} values={Array.isArray(user) ? user : []} disabled={done}
+                    onChange={(bi, val) => { const cur = Array.isArray(answers[q.id]) ? [...answers[q.id]] : []; cur[bi] = val; setAnswers({ ...answers, [q.id]: cur }) }} />
+                : q.content}
+            </div>
             {q.image_url && <div style={{ margin: '0 0 10px' }}><img src={q.image_url} alt="minh họa câu hỏi" loading="lazy" /></div>}
             {q.qtype === 'trac_nghiem' && opts.map((o, k) => {
               const letter = 'ABCD'[k]
@@ -136,7 +146,7 @@ export default function Practice() {
               }
               return <button key={k} type="button" className={cls} disabled={done} aria-pressed={picked} onClick={() => !done && setAnswers({ ...answers, [q.id]: letter })}><b aria-hidden="true">{letter}.</b> {o}</button>
             })}
-            {q.qtype !== 'trac_nghiem' && (
+            {q.qtype !== 'trac_nghiem' && q.qtype !== 'diem_khuyet' && (
               <>
                 <label className="lbl" htmlFor={`pa-${q.id}`}>Bài làm của bạn</label>
                 <textarea className="textarea" id={`pa-${q.id}`} value={user} onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })} placeholder="Trình bày bài làm…" />

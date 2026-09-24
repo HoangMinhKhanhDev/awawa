@@ -26,6 +26,14 @@ define('API_TOKEN', envv('API_TOKEN', ''));
 define('UPLOAD_DIR', envv('UPLOAD_DIR', __DIR__ . '/../uploads'));
 define('PUBLIC_BASE', envv('PUBLIC_BASE', '')); // VD: https://herbspalab.com — để trống = tự đoán
 define('MAX_UPLOAD_MB', (int)envv('MAX_UPLOAD_MB', '5'));
+// Agnes AI (OpenAI-compatible) — chi doc tu local.php / env, KHONG commit key
+define('AGNES_API_KEY', envv('AGNES_API_KEY', ''));
+define('AGNES_BASE_URL', envv('AGNES_BASE_URL', 'https://apihub.agnes-ai.com/v1'));
+define('AGNES_DEFAULT_MODEL', envv('AGNES_DEFAULT_MODEL', 'agnes-2.5-flash'));
+// 3 model sinh text hop le
+function agnes_models() {
+    return array('agnes-2.5-flash', 'agnes-2.0-flash', 'agnes-1.5-flash');
+}
 
 function db() {
     static $pdo = null;
@@ -381,4 +389,121 @@ function seed_role_permissions() {
     foreach (default_role_perms() as $role => $perms) {
         foreach ($perms as $k => $v) $st->execute(array($role, $k, (int)$v));
     }
+}
+
+// ---------------- Agnes AI (OpenAI-compatible) ----------------
+// Chi goi tu server — API key khong bao gio ra client.
+function agnes_chat($messages, $model = '', $max_tokens = 4000, $temperature = 0.4) {
+    if (AGNES_API_KEY === '') jerr('AI chua cau hinh (thieu AGNES_API_KEY).', 500);
+    if ($model === '' || !in_array($model, agnes_models(), true)) $model = AGNES_DEFAULT_MODEL;
+    $payload = json_encode(array(
+        'model' => $model,
+        'messages' => $messages,
+        'temperature' => $temperature,
+        'max_tokens' => $max_tokens,
+    ), JSON_UNESCAPED_UNICODE);
+    $ch = curl_init(rtrim(AGNES_BASE_URL, '/') . '/chat/completions');
+    curl_setopt_array($ch, array(
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => array(
+            'Authorization: Bearer ' . AGNES_API_KEY,
+            'Content-Type: application/json',
+        ),
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_TIMEOUT => 90,
+        CURLOPT_CONNECTTIMEOUT => 15,
+    ));
+    $raw = curl_exec($ch);
+    $err = curl_error($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($raw === false) jerr('AI loi mang: ' . $err, 502);
+    $j = json_decode($raw, true);
+    if ($code >= 400) {
+        $msg = $j['error']['message'] ?? ('HTTP ' . $code);
+        jerr('AI tra loi loi: ' . mb_substr((string)$msg, 0, 300), 502);
+    }
+    $content = $j['choices'][0]['message']['content'] ?? '';
+    if ($content === '') jerr('AI khong tra ve noi dung.', 502);
+    return $content;
+}
+
+// Parse JSON tu AI: strip ```json fence, tim object/array dau tien.
+function agnes_parse_json($text) {
+    $t = trim((string)$text);
+    $t = preg_replace('/^```(?:json)?\s*/i', '', $t);
+    $t = preg_replace('/\s*```$/', '', $t);
+    $t = trim($t);
+    $start = strpos($t, '{');
+    $arr = strpos($t, '[');
+    if ($start === false && $arr === false) return null;
+    if ($arr !== false && ($start === false || $arr < $start)) {
+        $end = strrpos($t, ']');
+        if ($end === false) return null;
+        return json_decode(substr($t, $arr, $end - $arr + 1), true);
+    }
+    $end = strrpos($t, '}');
+    if ($end === false) return null;
+    $j = json_decode(substr($t, $start, $end - $start + 1), true);
+    return $j;
+}
+
+// ---------------- Cloze (diem khuyet) ----------------
+// Norm: lowercase, bo dau, bo thua ky tu, trim.
+function cloze_norm($s) {
+    $s = mb_strtolower(trim((string)$s), 'UTF-8');
+    $s = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $s);
+    if ($s === false) $s = mb_strtolower(trim((string)$s), 'UTF-8');
+    $s = preg_replace('/[^\p{L}\p{N}]+/u', '', $s);
+    return $s;
+}
+
+// Dem so ___ hoac {{...}} trong content.
+function cloze_blank_count($content) {
+    $n = preg_match_all('/\{\{[^}]+\}\}/', (string)$content, $m1);
+    $n2 = preg_match_all('/_{3,}/', (string)$content, $m2);
+    return max((int)$n, (int)$n2);
+}
+
+// Danh sach dap an tu correct_answer: tach bang | , || hoac ;\n
+function cloze_answers($correct_answer) {
+    $parts = preg_split('/\|\||\||;/', (string)$correct_answer);
+    $out = array();
+    foreach ($parts as $p) {
+        $p = trim($p);
+        if ($p !== '') $out[] = $p;
+    }
+    return $out;
+}
+
+// $user: string "a,b,c" hoac JSON array, $correct: field answer
+// Tra ve so cau dung / so blank (partial credit: moi blank dung 1 diem).
+function grade_cloze($content, $correct_answer, $user_answer) {
+    $answers = cloze_answers($correct_answer);
+    $nBlanks = cloze_blank_count($content);
+    if (!$answers) return null; // khong du thong tin -> khong cham
+    if (is_array($user_answer)) $ua = $user_answer;
+    else {
+        $ua = json_decode((string)$user_answer, true);
+        if (!is_array($ua)) {
+            $ua = array();
+            foreach (explode(',', (string)$user_answer) as $x) $ua[] = trim($x);
+        }
+    }
+    // Neu HS gui string thay vi array: xu ly tung blank
+    if (count($ua) === 1 && count($answers) > 1 && is_string($ua[0])) {
+        $split = preg_split('/\s*,\s*/', trim((string)$ua[0]));
+        if (count($split) === count($answers)) $ua = $split;
+    }
+    $correct = 0;
+    $detail = array();
+    foreach ($answers as $i => $ans) {
+        $u = isset($ua[$i]) ? (is_array($ua[$i]) ? ($ua[$i]['text'] ?? '') : $ua[$i]) : '';
+        $ok = cloze_norm($u) !== '' && cloze_norm($u) === cloze_norm($ans);
+        $detail[] = array('blank' => $i + 1, 'ok' => $ok, 'answer' => $ans, 'user' => (string)$u);
+        if ($ok) $correct++;
+    }
+    $total = max(count($answers), $nBlanks, 1);
+    return array('correct' => $correct, 'total' => $total, 'detail' => $detail);
 }

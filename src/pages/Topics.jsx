@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { IconBook, IconTask, IconClip, IconArrowLeft, IconCheckCircle, IconCircle, IconPlus, IconPencil, IconX, IconFile } from '../components/icons.jsx'
+import { IconBook, IconTask, IconClip, IconArrowLeft, IconCheckCircle, IconCircle, IconPlus, IconPencil, IconX, IconFile, IconLayers, IconPlay } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 import { isStaffRole } from '../lib/roles.js'
@@ -8,6 +8,7 @@ import { isStaffRole } from '../lib/roles.js'
 const TABS = [
   { id: 'lesson', label: 'Bài học', icon: IconBook },
   { id: 'assign', label: 'Bài tập', icon: IconTask },
+  { id: 'cards', label: 'Flashcard', icon: IconLayers },
   { id: 'docs', label: 'Tài liệu', icon: IconClip },
 ]
 
@@ -94,6 +95,10 @@ export default function Topics() {
               ))
             })()}
           </div>
+        )}
+
+        {tab === 'cards' && (
+          <FlashcardPanel topics={d?.topics || []} teacher={teacher} />
         )}
 
         {tab === 'docs' && (
@@ -486,6 +491,158 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+/* ---------- FLASHCARD: GV quan ly + HS hoc (Leitner don gian) ---------- */
+function FlashcardPanel({ topics, teacher }) {
+  const { toast, errMsg, confirmBox } = useUI()
+  const [openId, setOpenId] = useState(null)
+  const [cards, setCards] = useState([])
+  const [flip, setFlip] = useState(false)
+  const [idx, setIdx] = useState(0)
+  const [learning, setLearning] = useState(false)
+  const [newCard, setNewCard] = useState({ front: '', back: '' })
+  const [saving, setSaving] = useState(false)
+
+  const load = async (tid) => {
+    try { setCards(await api.flashcards(tid)) } catch { setCards([]) }
+    setIdx(0); setFlip(false)
+  }
+  useEffect(() => { if (openId) load(openId); /* eslint-disable-next-line */ }, [openId])
+
+  const review = async (quality) => {
+    const c = cards[idx]
+    if (!c) return
+    try {
+      const r = await api.reviewFlashcard(c.id, quality)
+      setCards((cs) => cs.map((x) => x.id === c.id ? { ...x, box: r.box } : x))
+      setFlip(false)
+      if (idx + 1 < cards.length) setIdx(idx + 1)
+      else { setLearning(false); toast('Xong vòng học! 🎉') }
+    } catch (e) { toast(errMsg(e), 'err') }
+  }
+
+  const addOne = async () => {
+    if (!newCard.front.trim()) return toast('Nhập mặt trước.', 'warn')
+    setSaving(true)
+    try {
+      await api.createFlashcards({ topic_id: openId, cards: [{ front: newCard.front, back: newCard.back }] })
+      setNewCard({ front: '', back: '' })
+      await load(openId)
+      toast('Đã thêm thẻ.')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setSaving(false)
+  }
+
+  const del = async (id) => {
+    if (!(await confirmBox('Xóa thẻ này?'))) return
+    try { await api.deleteFlashcard(id); await load(openId) } catch (e) { toast(errMsg(e), 'err') }
+  }
+
+  if (!openId) {
+    return (
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Flashcard theo chuyên đề</h3>
+        <div className="small muted" style={{ marginBottom: 8 }}>
+          {teacher ? 'Chọn CĐ để xem/thêm thẻ (sinh nhiều thẻ bằng Studio → AI).' : 'Chọn CĐ để học thẻ lật trước/sau.'}
+        </div>
+        {topics.length === 0 && <div className="empty">Chưa có chuyên đề.</div>}
+        {topics.map((t, i) => (
+          <div key={t.id} className="board-row clickable" role="button" tabIndex={0}
+            onClick={() => setOpenId(t.id)}
+            onKeyDown={(e) => { if (e.key === 'Enter') setOpenId(t.id) }}>
+            <span className="rank">{String(i + 1).padStart(2, '0')}</span>
+            <b>{t.name}</b>
+            <span className="small muted push">Mở →</span>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  const t = topics.find((x) => x.id === openId)
+  const c = cards[idx]
+  const mastered = cards.filter((x) => (x.box || 0) >= 3).length
+
+  if (learning && c) {
+    return (
+      <div className="grid">
+        <div className="card">
+          <div className="row spread">
+            <button className="btn" onClick={() => { setLearning(false); setFlip(false) }}><IconArrowLeft className="icn sm" />Thoát</button>
+            <span className="badge">{idx + 1}/{cards.length} · Đã nhớ {mastered}</span>
+          </div>
+          <div style={{ marginTop: 14, minHeight: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', background: flip ? 'var(--leaf-soft)' : 'var(--line-soft)', borderRadius: 14, padding: 20, cursor: 'pointer', textAlign: 'center' }}
+            onClick={() => setFlip((v) => !v)} role="button" tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter') setFlip((v) => !v) }}>
+            <div>
+              <div className="small muted" style={{ marginBottom: 6 }}>{flip ? 'Mặt sau' : 'Mặt trước — bấm để lật'}</div>
+              <div style={{ fontSize: 17, fontWeight: 600, whiteSpace: 'pre-wrap' }}>
+                {flip ? (c.back || '(trống)') : c.front}
+              </div>
+            </div>
+          </div>
+          {flip && (
+            <div className="row" style={{ marginTop: 14, justifyContent: 'center' }}>
+              <button className="btn danger" onClick={() => review(0)}>Chưa nhớ</button>
+              <button className="btn" onClick={() => review(1)}>Mơ mơ</button>
+              <button className="btn primary" onClick={() => review(2)}>Nhớ ✓</button>
+            </div>
+          )}
+          <div className="small muted" style={{ marginTop: 10, textAlign: 'center' }}>
+            Ô nhớ: {Array.from({ length: 4 }, (_, i) => (c.box || 0) > i ? '●' : '○').join(' ')} · Lật thẻ rồi chấm độ nhớ
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid">
+      <div className="card">
+        <div className="row spread">
+          <button className="btn" onClick={() => setOpenId(null)}><IconArrowLeft className="icn sm" />Danh sách CĐ</button>
+          {cards.length > 0 && !teacher && (
+            <button className="btn primary" onClick={() => { setIdx(0); setFlip(false); setLearning(true) }}>
+              <IconPlay className="icn sm" />Học {cards.length} thẻ
+            </button>
+          )}
+        </div>
+        <h2 style={{ margin: '10px 0 4px' }}>{t?.name || openId}</h2>
+        <div className="small muted">{cards.length} thẻ · {mastered} đã nhớ (ô 3–4)</div>
+      </div>
+
+      {teacher && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Thêm thẻ thủ công</h3>
+          <label className="lbl">Mặt trước *</label>
+          <input className="input" value={newCard.front} onChange={(e) => setNewCard({ ...newCard, front: e.target.value })}
+            placeholder="VD: Dao động điều hòa là gì?" />
+          <label className="lbl">Mặt sau</label>
+          <input className="input" value={newCard.back} onChange={(e) => setNewCard({ ...newCard, back: e.target.value })}
+            placeholder="VD: Chuyển động lặp..." />
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="btn primary" onClick={addOne} disabled={saving}><IconPlus className="icn sm" />Thêm</button>
+            <Link className="btn" to="/manage/studio">Sinh hàng loạt bằng AI →</Link>
+          </div>
+        </div>
+      )}
+
+      {cards.length === 0 && <div className="empty">Chưa có thẻ ở CĐ này.</div>}
+      {cards.map((x, i) => (
+        <div key={x.id} className="card">
+          <div className="row spread">
+            <b>{i + 1}. {x.front}</b>
+            <div className="row">
+              <span className="badge">{Array.from({ length: 4 }, (_, k) => (x.box || 0) > k ? '●' : '○').join('')}</span>
+              {teacher && <button className="btn danger" onClick={() => del(x.id)}><IconX className="icn sm" /></button>}
+            </div>
+          </div>
+          <div className="small muted" style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{x.back}</div>
+        </div>
+      ))}
     </div>
   )
 }

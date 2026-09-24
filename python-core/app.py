@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import routes_ai
 import routes_assign
 import routes_auth
 import routes_bank
@@ -24,4 +25,5 @@ def build_app():
     app.include_router(routes_auth.router)
     app.include_router(routes_exams.router)
     app.include_router(routes_assign.router)
+    app.include_router(routes_ai.router)
     return app

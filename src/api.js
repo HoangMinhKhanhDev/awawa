@@ -177,6 +177,14 @@ const mvpMethods = (call, qs) => ({
   deleteTopic: (id) => call(`/topics/${id}`, { method: 'DELETE' }),
   getQuestion: (id) => call(`/questions/${id}`),
   duplicateQuestion: (id) => call(`/questions/${id}/duplicate`, { method: 'POST', body: '{}' }),
+  // AI (Agnes) — server proxy, key khong ra client
+  aiGenerate: (payload) => call('/ai/generate', { method: 'POST', body: JSON.stringify(payload) }),
+  // Flashcards
+  flashcards: (topic_id) => call('/flashcards' + qs({ topic_id })),
+  createFlashcards: (payload) => call('/flashcards', { method: 'POST', body: JSON.stringify(payload) }),
+  updateFlashcard: (id, payload) => call(`/flashcards/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteFlashcard: (id) => call(`/flashcards/${id}`, { method: 'DELETE' }),
+  reviewFlashcard: (id, quality) => call(`/flashcards/${id}/review`, { method: 'POST', body: JSON.stringify({ quality }) }),
 })
 
 async function req(path, options = {}) {

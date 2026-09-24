@@ -12,16 +12,17 @@ import { isStaffRole } from '../lib/roles.js'
 const optsOf = (q) => { try { const p = JSON.parse(q.options || '[]'); return Array.isArray(p) ? p : [] } catch { return [] } }
 
 const STEPS = [
-  { id: 'import', label: '1 · Nhập câu hỏi', icon: IconFileUp },
-  { id: 'lesson', label: '2 · Bài học', icon: IconBook },
-  { id: 'exam', label: '3 · Đề thi', icon: IconTimer },
-  { id: 'assign', label: '4 · Bài tập', icon: IconTask },
+  { id: 'ai', label: 'AI tạo nội dung', icon: IconWand },
+  { id: 'import', label: 'Nhập câu hỏi', icon: IconFileUp },
+  { id: 'lesson', label: 'Bài học', icon: IconBook },
+  { id: 'exam', label: 'Đề thi', icon: IconTimer },
+  { id: 'assign', label: 'Bài tập', icon: IconTask },
 ]
 
 export default function Studio() {
   const rawRole = getSession().student?.role || 'student'
   const isStaff = isStaffRole(rawRole)
-  const [step, setStep] = useState('import')
+  const [step, setStep] = useState('ai')
   const nav = useNavigate()
 
   if (!isStaff) {
@@ -40,10 +41,10 @@ export default function Studio() {
       <div className="card">
         <h1 className="icon-h"><IconWand className="icn" />Studio tạo nội dung</h1>
         <div className="small muted">
-          Pipeline 4 bước: nhập câu → bài học → chốt đề thi → giao bài tập.
-          Học sinh làm đề ở tab <b>Thi thử</b>, bài tập ở tab <b>Bài tập</b>.
+          Bắt đầu với <b>AI</b> để sinh câu hỏi / bài học / đề / flashcard / cloze, duyệt rồi lưu.
+          Hoặc nhập tay ở các tab sau.
         </div>
-        <div className="subnav" style={{ marginTop: 12 }} role="tablist" aria-label="Bước pipeline">
+        <div className="subnav" style={{ marginTop: 12 }} role="tablist" aria-label="Chức năng Studio">
           {STEPS.map((s) => {
             const Icon = s.icon
             return (
@@ -55,6 +56,7 @@ export default function Studio() {
         </div>
       </div>
 
+      {step === 'ai' && <StepAI goManual={setStep} />}
       {step === 'import' && <StepImport onNext={() => setStep('lesson')} />}
       {step === 'lesson' && <StepLesson onNext={() => setStep('exam')} />}
       {step === 'exam' && <StepExam onNext={() => setStep('assign')} />}
@@ -62,13 +64,342 @@ export default function Studio() {
 
       <div className="card">
         <div className="row spread">
-          <div className="small muted">Pipeline hiện tại không chặn bước — nhảy bất kỳ đâu cũng được.</div>
+          <div className="small muted">Pipeline không chặn bước — nhảy bất kỳ đâu cũng được.</div>
           <div className="row">
             <Link className="btn" to="/manage/bank"><IconChecks className="icn sm" />Mở ngân hàng</Link>
             <Link className="btn" to="/manage/import"><IconUpload className="icn sm" />Nhập DOCX/PDF</Link>
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+/* ---------- Tab AI: sinh noi dung bang Agnes AI ---------- */
+const AI_TYPES = [
+  { id: 'questions', label: 'Câu hỏi trắc nghiệm', hint: 'Lưu vào ngân hàng' },
+  { id: 'cloze', label: 'Điền từ (cloze)', hint: 'Câu có ___ / {{từ}}' },
+  { id: 'lesson', label: 'Bài học', hint: 'Nội dung lý thuyết' },
+  { id: 'exam', label: 'Đề thi', hint: ' publish đề shared' },
+  { id: 'flashcards', label: 'Flashcard', hint: 'Thẻ lật trước/sau' },
+]
+const AI_MODELS = [
+  { id: 'agnes-2.5-flash', label: 'agnes-2.5-flash (khuyên dùng)' },
+  { id: 'agnes-2.0-flash', label: 'agnes-2.0-flash (cân bằng)' },
+  { id: 'agnes-1.5-flash', label: 'agnes-1.5-flash (nhanh)' },
+]
+
+function StepAI({ goManual }) {
+  const { toast, errMsg } = useUI()
+  const [subjects, setSubjects] = useState([])
+  const [topics, setTopics] = useState([])
+  const [form, setForm] = useState({
+    type: 'questions', model: 'agnes-2.5-flash',
+    subject: '', subject_id: '', topic: '', topic_id: '',
+    count: 5, difficulty: 'vận dụng', qtype: 'trac_nghiem', prompt: '',
+  })
+  const [busy, setBusy] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    api.subjects().then(setSubjects).catch(() => {})
+  }, [])
+
+  const pickSubject = async (sid) => {
+    setForm((f) => ({ ...f, subject_id: sid, topic_id: '' }))
+    const s = subjects.find((x) => x.id === sid)
+    setForm((f) => ({ ...f, subject: s?.name || '' }))
+    if (sid) api.topics(sid).then(setTopics).catch(() => setTopics([]))
+    else setTopics([])
+  }
+
+  const pickTopic = (tid) => {
+    const t = topics.find((x) => x.id === tid)
+    setForm((f) => ({ ...f, topic_id: tid, topic: t?.name || f.topic }))
+  }
+
+  const generate = async () => {
+    if (!form.topic.trim() && !form.prompt.trim()) {
+      return toast('Nhập chủ đề hoặc yêu cầu thêm.', 'warn')
+    }
+    setBusy(true); setPreview(null)
+    try {
+      const r = await api.aiGenerate({
+        type: form.type, model: form.model,
+        topic: form.topic, subject: form.subject,
+        count: Number(form.count) || 5,
+        difficulty: form.difficulty, qtype: form.qtype,
+        prompt: form.prompt,
+      })
+      setPreview(r.data)
+      toast('AI đã sinh — kiểm tra preview rồi bấm Lưu.')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBusy(false)
+  }
+
+  // ---------- SAVE handlers ----------
+  const saveQuestions = async () => {
+    const qs = (preview?.questions || []).map((q) => ({
+      subject_id: form.subject_id, topic_id: form.topic_id || null,
+      grade: 12, difficulty: form.difficulty,
+      qtype: q.qtype || form.qtype,
+      content: q.content, options: q.options || [],
+      correct_answer: q.correct_answer || '', explanation: q.explanation || '',
+      score: 1, source: 'ai',
+    })).filter((q) => q.content && q.subject_id)
+    if (!qs.length) return toast('Cần chọn môn + câu hỏi hợp lệ.', 'warn')
+    setSaving(true)
+    try {
+      const r = await api.bulkQuestions(qs)
+      toast(`Đã lưu ${r.inserted ?? qs.length} câu vào ngân hàng.`)
+      setPreview(null); goManual('bank')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setSaving(false)
+  }
+
+  const saveCloze = async () => {
+    // diem_khuyet van luu vao bank questions
+    const qs = (preview?.questions || []).map((q) => ({
+      subject_id: form.subject_id, topic_id: form.topic_id || null,
+      grade: 12, difficulty: 'nhận biết', qtype: 'diem_khuyet',
+      content: q.content, options: [],
+      correct_answer: q.correct_answer || '', explanation: '',
+      score: 1, source: 'ai',
+    })).filter((q) => q.content && q.subject_id)
+    if (!qs.length) return toast('Cần chọn môn + câu hỏi hợp lệ.', 'warn')
+    setSaving(true)
+    try {
+      const r = await api.bulkQuestions(qs)
+      toast(`Đã lưu ${r.inserted ?? qs.length} câu cloze.`)
+      setPreview(null); goManual('bank')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setSaving(false)
+  }
+
+  const saveLesson = async () => {
+    if (!form.topic_id) return toast('Chọn chuyên đề để gắn bài học.', 'warn')
+    if (!preview?.content && !preview?.title) return toast('Chưa có nội dung.', 'warn')
+    setSaving(true)
+    try {
+      await api.createLesson({
+        topic_id: form.topic_id,
+        title: preview.title || form.topic,
+        content: preview.content || '',
+      })
+      toast('Đã lưu bài học.')
+      setPreview(null); goManual('lesson')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setSaving(false)
+  }
+
+  const saveFlashcards = async () => {
+    if (!form.topic_id) return toast('Chọn chuyên đề để gắn flashcard.', 'warn')
+    const cards = (preview?.cards || []).filter((c) => c.front)
+    if (!cards.length) return toast('Không có thẻ hợp lệ.', 'warn')
+    setSaving(true)
+    try {
+      const r = await api.createFlashcards({ topic_id: form.topic_id, cards })
+      toast(`Đã lưu ${r.inserted} thẻ flashcard.`)
+      setPreview(null)
+    } catch (e) { toast(errMsg(e), 'err') }
+    setSaving(false)
+  }
+
+  const saveExam = async () => {
+    if (!form.subject_id) return toast('Chọn môn.', 'warn')
+    const qs = (preview?.questions || []).map((q) => ({
+      subject_id: form.subject_id, topic_id: form.topic_id || null,
+      grade: 12, difficulty: form.difficulty, qtype: 'trac_nghiem',
+      content: q.content, options: q.options || [],
+      correct_answer: q.correct_answer || '', explanation: q.explanation || '',
+      score: 1, source: 'ai',
+    })).filter((q) => q.content)
+    if (!qs.length) return toast('Không có câu hỏi.', 'warn')
+    setSaving(true)
+    try {
+      const ids = []
+      for (const q of qs) {
+        const r = await api.createQuestion(q)
+        if (r?.id) ids.push(r.id)
+      }
+      await api.createExam({
+        title: preview.title || `Đề ${form.topic || 'AI'}`,
+        mode: 'shared', duration_min: 45, question_ids: ids,
+      })
+      toast(`Đã publish đề ${ids.length} câu (shared).`)
+      setPreview(null); goManual('exam')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setSaving(false)
+  }
+
+  const t = form.type
+  const hasSubjects = subjects.length > 0
+
+  return (
+    <div className="grid">
+      <div className="card">
+        <div className="row spread">
+          <h3 style={{ margin: 0 }}>🤖 Sinh nội dung bằng AI</h3>
+          <span className="badge">Agnes AI · OpenAI-compatible</span>
+        </div>
+        <div className="small muted" style={{ marginTop: 4 }}>
+          Chọn loại nội dung → mô tả chủ đề → AI trả JSON → bạn duyệt preview rồi Lưu.
+        </div>
+
+        <div className="row" style={{ marginTop: 12, gap: 8 }}>
+          <select className="select" style={{ flex: 1, minWidth: 160 }} value={t}
+            onChange={(e) => { setForm({ ...form, type: e.target.value }); setPreview(null) }}>
+            {AI_TYPES.map((x) => <option key={x.id} value={x.id}>{x.label} — {x.hint}</option>)}
+          </select>
+          <select className="select" style={{ flex: 1, minWidth: 160 }} value={form.model}
+            onChange={(e) => setForm({ ...form, model: e.target.value })}>
+            {AI_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        </div>
+
+        <div className="grid c3" style={{ marginTop: 8 }}>
+          <div>
+            <label className="lbl">Môn *</label>
+            <select className="select" value={form.subject_id} onChange={(e) => pickSubject(e.target.value)}>
+              <option value="">— Chọn —</option>
+              {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="lbl">Chuyên đề (gắn khi lưu)</label>
+            <select className="select" value={form.topic_id} onChange={(e) => pickTopic(e.target.value)}>
+              <option value="">— Chọn —</option>
+              {topics.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="lbl">Số lượng</label>
+            <input className="input" type="number" min="1" max="30" value={form.count}
+              onChange={(e) => setForm({ ...form, count: e.target.value })} />
+          </div>
+        </div>
+
+        <label className="lbl">Chủ đề / đề bài *</label>
+        <input className="input" placeholder="VD: Dao động điều hòa, họ Ankyl…" value={form.topic}
+          onChange={(e) => setForm({ ...form, topic: e.target.value })} />
+
+        {(t === 'questions' || t === 'exam') && (
+          <div className="grid c2" style={{ marginTop: 8 }}>
+            <div>
+              <label className="lbl">Độ khó</label>
+              <select className="select" value={form.difficulty} onChange={(e) => setForm({ ...form, difficulty: e.target.value })}>
+                <option>nhận biết</option><option>thông hiểu</option><option>vận dụng</option><option>vận dụng cao</option>
+              </select>
+            </div>
+            {t === 'questions' && (
+              <div>
+                <label className="lbl">Loại câu</label>
+                <select className="select" value={form.qtype} onChange={(e) => setForm({ ...form, qtype: e.target.value })}>
+                  <option value="trac_nghiem">Trắc nghiệm</option>
+                  <option value="tu_luan">Tự luận</option>
+                  <option value="diem_khuyet">Điền từ (cloze)</option>
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+
+        <label className="lbl">Yêu cầu thêm (tùy chọn)</label>
+        <textarea className="textarea" style={{ minHeight: 60 }} placeholder="VD: ưu tiên ví dụ thực tế nông nghiệp, 4 phương án…" value={form.prompt}
+          onChange={(e) => setForm({ ...form, prompt: e.target.value })} />
+
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="btn primary" onClick={generate} disabled={busy || !hasSubjects}>
+            <IconWand className="icn sm" />{busy ? 'AI đang suy nghĩ…' : 'Sinh nội dung'}
+          </button>
+          {!hasSubjects && <span className="small muted">Chưa có môn học — kiểm tra seed.</span>}
+        </div>
+      </div>
+
+      {preview && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Xem trước — kiểm tra rồi Lưu</h3>
+
+          {/* flashcards */}
+          {(preview.cards || preview.front) && (
+            <div>
+              {(preview.cards || [preview]).map((c, i) => (
+                <div key={i} className="board-row">
+                  <b>F{i + 1}</b>
+                  <div style={{ flex: 1 }}>
+                    <div>{c.front}</div>
+                    <div className="small muted">{c.back}</div>
+                  </div>
+                </div>
+              ))}
+              <div className="row" style={{ marginTop: 10 }}>
+                <button className="btn primary" onClick={saveFlashcards} disabled={saving}>
+                  {saving ? 'Đang lưu…' : `Lưu ${preview.cards?.length || 0} thẻ`}
+                </button>
+                <button className="btn" onClick={() => setPreview(null)}>Bỏ qua</button>
+              </div>
+            </div>
+          )}
+
+          {/* lesson */}
+          {(preview.content && !preview.questions && !preview.cards) && (
+            <div>
+              <b>{preview.title || form.topic}</b>
+              <div style={{ whiteSpace: 'pre-wrap', marginTop: 8, fontSize: 14, lineHeight: 1.65 }}>{preview.content}</div>
+              <div className="row" style={{ marginTop: 10 }}>
+                <button className="btn primary" onClick={saveLesson} disabled={saving}>
+                  {saving ? 'Đang lưu…' : 'Lưu bài học'}
+                </button>
+                <button className="btn" onClick={() => setPreview(null)}>Bỏ qua</button>
+              </div>
+            </div>
+          )}
+
+          {/* questions / exam / cloze */}
+          {(preview.questions || preview.title) && !preview.cards && !preview.content && (
+            <div>
+              {preview.title && <div className="small muted">Đề: <b>{preview.title}</b></div>}
+              <table className="tbl" style={{ marginTop: 8 }}>
+                <thead><tr><th>#</th><th>Câu hỏi</th><th>Đáp án</th></tr></thead>
+                <tbody>
+                  {(preview.questions || []).map((q, i) => (
+                    <tr key={i}>
+                      <td>{i + 1}</td>
+                      <td style={{ whiteSpace: 'pre-wrap' }}>{q.content}</td>
+                      <td className="small">
+                        {q.options ? (q.options.join(' · ') + (q.correct_answer ? ` → ${q.correct_answer}` : '')) : q.correct_answer}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="row" style={{ marginTop: 10 }}>
+                {t === 'exam' ? (
+                  <button className="btn primary" onClick={saveExam} disabled={saving}>
+                    {saving ? 'Đang lưu…' : 'Lưu đề thi (shared)'}
+                  </button>
+                ) : t === 'cloze' || form.qtype === 'diem_khuyet' ? (
+                  <button className="btn primary" onClick={saveCloze} disabled={saving}>
+                    {saving ? 'Đang lưu…' : 'Lưu cloze vào ngân hàng'}
+                  </button>
+                ) : (
+                  <button className="btn primary" onClick={saveQuestions} disabled={saving}>
+                    {saving ? 'Đang lưu…' : `Lưu ${(preview.questions || []).length} câu vào ngân hàng`}
+                  </button>
+                )}
+                <button className="btn" onClick={() => setPreview(null)}>Bỏ qua</button>
+                <button className="btn" onClick={generate} disabled={busy}>Sinh lại</button>
+              </div>
+            </div>
+          )}
+
+          {/* fallback weird shape */}
+          {!preview.cards && !preview.questions && !preview.content && !preview.title && (
+            <pre className="code">{JSON.stringify(preview, null, 2).slice(0, 2000)}</pre>
+          )}
+        </div>
+      )}
     </div>
   )
 }

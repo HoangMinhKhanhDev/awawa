@@ -89,6 +89,16 @@ def submit_exam(eid: int, payload: SubmitIn, request: Request):
                 a["is_correct"] = True
             else:
                 a["is_correct"] = False
+        elif qr["qtype"] == "diem_khuyet":
+            from cloze import grade_cloze
+            g = grade_cloze(qr.get("content") or "", qr.get("correct_answer") or "", a.get("user_answer") or "")
+            if g:
+                total += g["total"]
+                correct += g["correct"]
+                a["is_correct"] = g["correct"] >= g["total"]
+                a["cloze"] = g["detail"]
+            else:
+                a["is_correct"] = None
         else:
             a["is_correct"] = None  # tá»± luáº­n: tá»± Ä‘á»‘i chiáº¿u, khÃ´ng auto cháº¥m
     acc = (correct / total) if total else 0
