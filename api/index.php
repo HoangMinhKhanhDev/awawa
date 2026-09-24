@@ -3,9 +3,18 @@
 // Không framework, chạy được trên PHP 7.4+ của shared hosting.
 require __DIR__ . '/config.php';
 
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Headers: Content-Type, X-Api-Token, X-Session-Token');
-header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: same-origin');
+header('X-Frame-Options: DENY');
+$allowedOrigins = array_values(array_filter(array_map('trim', explode(',', envv('ALLOWED_ORIGINS', '')))));
+$requestOrigin = trim((string)($_SERVER['HTTP_ORIGIN'] ?? ''));
+if ($requestOrigin !== '' && in_array($requestOrigin, $allowedOrigins, true)) {
+    header('Access-Control-Allow-Origin: ' . $requestOrigin);
+    header('Vary: Origin');
+    header('Access-Control-Allow-Headers: Content-Type, X-Session-Token, X-School-ID, X-Request-ID');
+    header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    header('Access-Control-Max-Age: 600');
+}
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit(0);
 
 $method = $_SERVER['REQUEST_METHOD'];
@@ -45,11 +54,38 @@ function q_one($sql, $params = array()) {
     return $r === false ? null : $r;
 }
 
+require_once __DIR__ . '/lib/policy.php';
+require_once __DIR__ . '/routes_v2.php';
+if (handle_v2_api($method, $path)) exit;
+if (!policy_legacy_route_allowed($path)) {
+    jerr('API v1 đã bị khóa trong chế độ đa trường. Hãy dùng API v2.', 410);
+}
+
 function jlist($v) {
     if ($v === null || $v === '') return array();
     if (is_array($v)) return $v;
     $p = json_decode($v, true);
     return is_array($p) ? $p : array();
+}
+
+function validate_topic_parent($parent, $topic_id, $subject_id) {
+    $parent = trim((string)$parent);
+    if ($parent === '') return null;
+    $target = (string)$topic_id;
+    $seen = array();
+    $current = $parent;
+    $depth = 1;
+    while ($current !== '') {
+        if ($current === $target || isset($seen[$current])) jerr('Chuyên đề cha không hợp lệ.');
+        $seen[$current] = true;
+        $row = q_one('SELECT id, subject_id, parent_id FROM topics WHERE id=?', array($current));
+        if (!$row) jerr('Chuyên đề cha không tồn tại.');
+        if ((string)$row['subject_id'] !== (string)$subject_id) jerr('Chuyên đề cha phải cùng môn.');
+        $depth++;
+        if ($depth > 8) jerr('Độ sâu chuyên đề quá giới hạn.');
+        $current = trim((string)($row['parent_id'] ?? ''));
+    }
+    return $parent;
 }
 
 function subj_map() {
@@ -64,7 +100,7 @@ function topic_map() {
     return $m;
 }
 
-function row_to_q($r) {
+function row_to_q($r, $includeAnswer = false) {
     static $sm = null, $tm = null;
     if ($sm === null) { $sm = subj_map(); $tm = topic_map(); }
     $tags = array();
@@ -72,20 +108,23 @@ function row_to_q($r) {
         $p = json_decode($r['tags'], true);
         if (is_array($p)) $tags = $p;
     }
-    return array(
+    $out = array(
         'id' => (int)$r['id'], 'subject_id' => $r['subject_id'],
         'subject_name' => isset($sm[$r['subject_id']]) ? $sm[$r['subject_id']] : $r['subject_id'],
         'topic_id' => $r['topic_id'],
         'topic_name' => ($r['topic_id'] && isset($tm[$r['topic_id']])) ? $tm[$r['topic_id']] : null,
         'grade' => (int)$r['grade'], 'difficulty' => $r['difficulty'], 'qtype' => $r['qtype'],
         'content' => $r['content'], 'options' => $r['options'] === null ? '[]' : $r['options'],
-        'correct_answer' => $r['correct_answer'] === null ? '' : $r['correct_answer'],
-        'explanation' => $r['explanation'] === null ? '' : $r['explanation'],
         'score' => (float)$r['score'], 'source' => $r['source'] === null ? '' : $r['source'],
         'image_url' => $r['image_url'] === null ? '' : $r['image_url'],
         'code' => isset($r['code']) && $r['code'] !== null ? $r['code'] : '',
         'tags' => $tags,
     );
+    if ($includeAnswer) {
+        $out['correct_answer'] = $r['correct_answer'] === null ? '' : $r['correct_answer'];
+        $out['explanation'] = $r['explanation'] === null ? '' : $r['explanation'];
+    }
+    return $out;
 }
 
 function row_to_attempt($r) {
@@ -105,6 +144,43 @@ if ($method === 'GET' && $path === '/health') {
     try { $n = (int)q_one('SELECT COUNT(*) c FROM questions')['c']; }
     catch (Exception $e) { $err = 'DB chưa kết nối: kiểm tra DB_HOST/DB_NAME/DB_USER/DB_PASS trong Environment variables hoặc api/local.php.'; }
     j(array('status' => 'ok', 'backend' => 'hostinger-mysql', 'time' => date('Y-m-d\TH:i:s'), 'total_questions' => $n, 'db_error' => $err));
+}
+
+if ($path === '/migrate' && ($method === 'GET' || $method === 'POST')) {
+    $token = trim((string)($_SERVER['HTTP_X_API_TOKEN'] ?? ''));
+    if (API_TOKEN === '' || $token === '' || !hash_equals(API_TOKEN, $token)) jerr('Sai API token.', 403);
+    $migrationRoot = dirname(__DIR__) . '/database';
+    if (!is_dir($migrationRoot . '/migrations') || !is_file($migrationRoot . '/lib/Migrator.php')) jerr('Chưa deploy database/migrations.', 503);
+    require_once $migrationRoot . '/lib/Migrator.php';
+    try {
+        $migrator = new Migrator(db(), $migrationRoot . '/migrations');
+        $status = $migrator->status();
+        $completed = 0;
+        $pending = 0;
+        foreach ($status as $row) {
+            if ((string) $row['status'] === 'completed') $completed++;
+            else $pending++;
+        }
+        $schoolCount = 0;
+        try { $schoolCount = (int) q_one('SELECT COUNT(*) AS total FROM schools')['total']; } catch (Throwable $ignored) {}
+        $payload = $method === 'GET' ? array() : body();
+        $action = (string) ($payload['action'] ?? 'status');
+        if ($action !== 'migrate') {
+            j(array('ok' => true, 'completed' => $completed, 'pending' => $pending, 'schools' => $schoolCount, 'migrations' => $status));
+        }
+        if ($pending === 0) jerr('Không còn migration cần chạy.', 409);
+        $slug = trim((string) ($payload['default_school_slug'] ?? ''));
+        $name = trim((string) ($payload['default_school_name'] ?? ''));
+        if ($schoolCount === 0 && ($slug === '' || $name === '')) jerr('Cần default_school_slug và default_school_name khi chưa có trường.', 422);
+        if ($slug !== '') putenv('AWAWA_MIGRATION_DEFAULT_SCHOOL_SLUG=' . $slug);
+        if ($name !== '') putenv('AWAWA_MIGRATION_DEFAULT_SCHOOL_NAME=' . $name);
+        if (!empty($payload['default_school_code'])) putenv('AWAWA_MIGRATION_DEFAULT_SCHOOL_CODE=' . (string) $payload['default_school_code']);
+        if (!empty($payload['assign_single_school'])) putenv('AWAWA_MIGRATION_ASSIGN_SINGLE_SCHOOL=1');
+        $ran = $migrator->migrate();
+        j(array('ok' => true, 'ran' => count($ran), 'results' => $ran, 'migrations' => $migrator->status()));
+    } catch (Throwable $exception) {
+        jerr('Migration lỗi: ' . $exception->getMessage(), 500);
+    }
 }
 
 // ---------------- AUTH HỌC SINH ----------------
@@ -200,17 +276,51 @@ if ($method === 'GET' && $path === '/subjects') {
     j(q_all('SELECT * FROM subjects ORDER BY name'));
 }
 
-// ---------------- TOPICS ----------------
+// ---------------- TOPICS (cay: parent_id/position/status) ----------------
 if ($path === '/topics') {
     if ($method === 'GET') {
         $sid = $_GET['subject_id'] ?? '';
-        $base = 'SELECT t.*, (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id) lesson_count,
-            (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id AND COALESCE(l.required,1)=1) required_count FROM topics t';
-        if ($sid !== '') j(q_all($base . ' WHERE t.subject_id=? ORDER BY t.name', array($sid)));
-        j(q_all($base . ' ORDER BY t.name'));
+        $staffTopics = is_role_teacher(optional_session());
+        $lessonStatus = $staffTopics ? '' : " AND COALESCE(l.status,'published')='published'";
+        $base = "SELECT t.*, (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id" . $lessonStatus . ") lesson_count,
+            (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id" . $lessonStatus . " AND COALESCE(l.required,1)=1) required_count FROM topics t";
+        $rows = ($sid !== '')
+            ? q_all($base . ' WHERE t.subject_id=? ORDER BY t.position, t.name', array($sid))
+            : q_all($base . ' ORDER BY t.subject_id, t.position, t.name');
+        // HS chi thay topic published; GV xem tat ca
+        if (!$staffTopics) {
+            $published = array();
+            foreach ($rows as $r) {
+                if (($r['status'] ?? 'published') === 'published') $published[(string)$r['id']] = $r;
+            }
+            $rows = array_values(array_filter($rows, function ($r) use ($published) {
+                if (($r['status'] ?? 'published') !== 'published') return false;
+                $parent = trim((string)($r['parent_id'] ?? ''));
+                $seen = array();
+                while ($parent !== '') {
+                    if (isset($seen[$parent]) || !isset($published[$parent])) return false;
+                    $seen[$parent] = true;
+                    $parent = trim((string)($published[$parent]['parent_id'] ?? ''));
+                }
+                return true;
+            }));
+        }
+        if (!empty($_GET['tree'])) {
+            $byId = array();
+            foreach ($rows as $r) { $r['children'] = array(); $byId[$r['id']] = $r; }
+            $tree = array();
+            foreach ($byId as $id => &$r) {
+                $pid = $r['parent_id'] ?? null;
+                if ($pid && isset($byId[$pid]) && $pid !== $id) $byId[$pid]['children'][] = &$r;
+                else $tree[] = &$r;
+            }
+            unset($r);
+            j($tree);
+        }
+        j($rows);
     }
     if ($method === 'POST') {
-        require_teacher();
+        require_perm('bank.manage');
         $b = body();
         $name = trim($b['name'] ?? '');
         if ($name === '') jerr('Thiếu tên chuyên đề');
@@ -218,8 +328,12 @@ if ($path === '/topics') {
         $tid = trim($b['id'] ?? '');
         if ($tid === '') $tid = 't-' . substr(md5(uniqid('', true)), 0, 8);
         if (q_one('SELECT 1 FROM topics WHERE id=?', array($tid))) jerr('Mã chuyên đề đã tồn tại');
-        db()->prepare('INSERT INTO topics (id, subject_id, name, grade, description) VALUES (?,?,?,?,?)')
-            ->execute(array($tid, $b['subject_id'], mb_substr($name, 0, 200), (int)($b['grade'] ?? 12), mb_substr(trim($b['description'] ?? ''), 0, 1000)));
+        $parent = validate_topic_parent($b['parent_id'] ?? '', $tid, $b['subject_id'] ?? '');
+        $status = array_key_exists('status', $b) && $b['status'] !== null && $b['status'] !== '' ? (string)$b['status'] : 'published';
+        if (!in_array($status, array('draft', 'review', 'published', 'archived'), true)) jerr('Trạng thái không hợp lệ.');
+        $pos = isset($b['position']) ? max(1, (int)$b['position']) : (int)q_one('SELECT COALESCE(MAX(position),0)+1 p FROM topics WHERE subject_id=?', array($b['subject_id']))['p'];
+        db()->prepare('INSERT INTO topics (id, subject_id, name, grade, description, parent_id, position, status) VALUES (?,?,?,?,?,?,?,?)')
+            ->execute(array($tid, $b['subject_id'], mb_substr($name, 0, 200), (int)($b['grade'] ?? 12), mb_substr(trim($b['description'] ?? ''), 0, 1000), $parent !== '' ? $parent : null, $pos, $status));
         j(array('id' => $tid));
     }
 }
@@ -227,7 +341,7 @@ if ($path === '/topics') {
 if (preg_match('#^/topics/([^/]+)$#', $path, $m)) {
     $tid = $m[1];
     if ($method === 'PUT') {
-        require_teacher();
+        require_perm('bank.manage');
         $t = q_one('SELECT * FROM topics WHERE id=?', array($tid));
         if (!$t) jerr('Không tìm thấy chuyên đề', 404);
         $b = body();
@@ -235,16 +349,24 @@ if (preg_match('#^/topics/([^/]+)$#', $path, $m)) {
         if ($name === '') $name = $t['name'];
         $desc = array_key_exists('description', $b) ? mb_substr(trim($b['description']), 0, 1000) : $t['description'];
         $grade = array_key_exists('grade', $b) && $b['grade'] !== null ? (int)$b['grade'] : (int)$t['grade'];
-        db()->prepare('UPDATE topics SET name=?, description=?, grade=? WHERE id=?')
-            ->execute(array(mb_substr($name, 0, 200), $desc, $grade, $tid));
+        $parent = array_key_exists('parent_id', $b) ? trim((string)($b['parent_id'] ?? '')) : trim((string)($t['parent_id'] ?? ''));
+        $parent = validate_topic_parent($parent, $tid, $t['subject_id'] ?? '');
+        $status = array_key_exists('status', $b) && $b['status'] !== null && $b['status'] !== '' ? (string)$b['status'] : ($t['status'] ?? 'published');
+        if (!in_array($status, array('draft', 'review', 'published', 'archived'), true)) jerr('Trạng thái không hợp lệ.');
+        $pos = array_key_exists('position', $b) && $b['position'] !== null ? max(1, (int)$b['position']) : (int)($t['position'] ?? 0);
+        db()->prepare('UPDATE topics SET name=?, description=?, grade=?, parent_id=?, position=?, status=? WHERE id=?')
+            ->execute(array(mb_substr($name, 0, 200), $desc, $grade, $parent !== '' ? $parent : null, $pos, $status, $tid));
         j(array('ok' => true));
     }
     if ($method === 'DELETE') {
-        require_teacher();
+        require_perm('bank.manage');
         if (!q_one('SELECT 1 FROM topics WHERE id=?', array($tid))) jerr('Không tìm thấy chuyên đề', 404);
+        // Con tro thanh root; bai hoc xoa kem (giu behavior cu)
+        db()->prepare('UPDATE topics SET parent_id=NULL WHERE parent_id=?')->execute(array($tid));
         $lids = q_all('SELECT id FROM lessons WHERE topic_id=?', array($tid));
         foreach ($lids as $l) {
             db()->prepare('DELETE FROM lesson_completions WHERE lesson_id=?')->execute(array($l['id']));
+            db()->prepare('DELETE FROM lesson_blocks WHERE lesson_id=?')->execute(array($l['id']));
         }
         db()->prepare('DELETE FROM lessons WHERE topic_id=?')->execute(array($tid));
         db()->prepare('DELETE FROM topics WHERE id=?')->execute(array($tid));
@@ -254,6 +376,7 @@ if (preg_match('#^/topics/([^/]+)$#', $path, $m)) {
 
 // ---------------- QUESTIONS LIST ----------------
 if ($method === 'GET' && $path === '/questions') {
+    require_perm('bank.manage');
     $sql = 'SELECT * FROM questions WHERE 1=1';
     $p = array();
     if (!empty($_GET['subject_id'])) { $sql .= ' AND subject_id=?'; $p[] = $_GET['subject_id']; }
@@ -266,13 +389,14 @@ if ($method === 'GET' && $path === '/questions') {
     if (!empty($_GET['tag'])) { $sql .= ' AND tags LIKE ?'; $p[] = '%' . $_GET['tag'] . '%'; }
     $lim = isset($_GET['limit']) ? max(1, min((int)$_GET['limit'], 500)) : 200;
     $sql .= ' ORDER BY id DESC LIMIT ' . $lim;
-    j(array_map('row_to_q', q_all($sql, $p)));
+    j(array_map(function ($row) { return row_to_q($row, true); }, q_all($sql, $p)));
 }
 
 if ($method === 'GET' && preg_match('#^/questions/(\d+)$#', $path, $m)) {
+    require_perm('bank.manage');
     $r = q_one('SELECT * FROM questions WHERE id=?', array((int)$m[1]));
     if (!$r) jerr('Không tìm thấy câu hỏi', 404);
-    j(row_to_q($r));
+    j(row_to_q($r, true));
 }
 
 function insert_question_row($b, $source) {
@@ -297,7 +421,7 @@ function insert_question_row($b, $source) {
 
 // ---------------- QUESTION CREATE ----------------
 if ($method === 'POST' && $path === '/questions') {
-    require_teacher();
+    require_perm('bank.manage');
     $b = body();
     if (empty($b['subject_id']) || trim($b['content'] ?? '') === '') jerr('Thiếu môn hoặc nội dung');
     if (!q_one('SELECT 1 FROM subjects WHERE id=?', array($b['subject_id']))) jerr('Môn không tồn tại');
@@ -307,7 +431,7 @@ if ($method === 'POST' && $path === '/questions') {
 }
 
 if ($method === 'POST' && preg_match('#^/questions/(\d+)/duplicate$#', $path, $m)) {
-    require_teacher();
+    require_perm('bank.manage');
     $src = q_one('SELECT * FROM questions WHERE id=?', array((int)$m[1]));
     if (!$src) jerr('Không tìm thấy câu hỏi', 404);
     $b = array(
@@ -325,7 +449,7 @@ if ($method === 'POST' && preg_match('#^/questions/(\d+)/duplicate$#', $path, $m
 
 // ---------------- QUESTIONS BULK ----------------
 if ($method === 'POST' && $path === '/questions/bulk') {
-    require_teacher();
+    require_perm('bank.manage');
     $b = body();
     $n = 0;
     foreach (($b['items'] ?? array()) as $it) {
@@ -340,7 +464,7 @@ if ($method === 'POST' && $path === '/questions/bulk') {
 if (preg_match('#^/questions/(\d+)$#', $path, $m)) {
     $qid = (int)$m[1];
     if ($method === 'PUT') {
-        require_teacher();
+        require_perm('bank.manage');
         $b = body();
         if (!q_one('SELECT 1 FROM questions WHERE id=?', array($qid))) jerr('Không tìm thấy câu hỏi', 404);
         $prev = q_one('SELECT code FROM questions WHERE id=?', array($qid));
@@ -358,7 +482,7 @@ if (preg_match('#^/questions/(\d+)$#', $path, $m)) {
         j(array('ok' => true));
     }
     if ($method === 'DELETE') {
-        require_teacher();
+        require_perm('bank.manage');
         db()->prepare('DELETE FROM questions WHERE id=?')->execute(array($qid));
         j(array('ok' => true));
     }
@@ -369,7 +493,7 @@ if ($method === 'POST' && $path === '/exams') {
     $b = body();
     $mode = $b['mode'] ?? 'practice';
     // De "shared" (dung trong Studio) chi GV+admin; practice/exam HS tu tao khi lam bai
-    if ($mode === 'shared') require_teacher();
+    if ($mode === 'shared') require_perm('studio.manage');
     db()->prepare('INSERT INTO exams (title, mode, duration_min, question_ids) VALUES (?,?,?,?)')
         ->execute(array(
             $b['title'] ?? 'Đề', $mode, (int)($b['duration_min'] ?? 45),
@@ -417,12 +541,18 @@ if ($method === 'POST' && preg_match('#^/exams/(\d+)/submit$#', $path, $m)) {
     $eid = (int)$m[1];
     $b = body();
     $ex = q_one('SELECT * FROM exams WHERE id=?', array($eid));
-    $mode = $ex ? $ex['mode'] : 'practice';
-    $examId = $ex ? (int)$ex['id'] : null;
-    $answers = $b['answers'] ?? array();
-    $qids = array_values(array_unique(array_filter(array_map(function ($a) {
+    if (!$ex) jerr('Không tìm thấy đề', 404);
+    $mode = $ex['mode'];
+    $examId = (int) $ex['id'];
+    $answers = is_array($b['answers'] ?? null) ? $b['answers'] : array();
+    $allowedQuestionIds = array_fill_keys(array_map('intval', jlist($ex['question_ids'])), true);
+    foreach ($answers as $answer) {
+        $questionId = isset($answer['question_id']) ? (int) $answer['question_id'] : 0;
+        if ($questionId <= 0 || !isset($allowedQuestionIds[$questionId])) jerr('Câu hỏi không thuộc đề.', 422);
+    }
+    $qids = array_values(array_unique(array_map(function ($a) {
         return isset($a['question_id']) ? (int)$a['question_id'] : 0;
-    }, $answers))));
+    }, $answers)));
     $byId = array();
     if ($qids) {
         $in = implode(',', array_fill(0, count($qids), '?'));
@@ -470,16 +600,27 @@ if ($method === 'POST' && preg_match('#^/exams/(\d+)/submit$#', $path, $m)) {
     }
     $acc = $total ? $correct / $total : 0;
     $flog = is_array($b['focus_log'] ?? null) ? array_slice($b['focus_log'], 0, 200) : array();
-    $sess = optional_session();
-    $sid = $sess ? (int)$sess['id'] : null;
-    db()->prepare('INSERT INTO attempts (exam_id, mode, correct, total, accuracy, detail, student_name, student_id, focus_exits, focus_log) VALUES (?,?,?,?,?,?,?,?,?,?)')
-        ->execute(array(
-            $examId, $mode, $correct, $total, $acc,
-            json_encode($details, JSON_UNESCAPED_UNICODE),
-            mb_substr(trim($b['student_name'] ?? ''), 0, 100), $sid,
-            max(0, (int)($b['focus_exits'] ?? 0)),
-            json_encode($flog, JSON_UNESCAPED_UNICODE),
-        ));
+    $sess = session_student();
+    $sid = (int) $sess['id'];
+    if (team_operations_ready()) {
+        db()->prepare('INSERT INTO attempts (exam_id, team_id, mode, status, correct, total, accuracy, detail, student_name, student_id, focus_exits, focus_log, started_at, submitted_at) VALUES (?,?,?,\'submitted\',?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)')
+            ->execute(array(
+                $examId, $ex['team_id'] ?? null, $mode, $correct, $total, $acc,
+                json_encode($details, JSON_UNESCAPED_UNICODE),
+                mb_substr(trim((string) ($sess['name'] ?? '')), 0, 100), $sid,
+                max(0, (int)($b['focus_exits'] ?? 0)),
+                json_encode($flog, JSON_UNESCAPED_UNICODE),
+            ));
+    } else {
+        db()->prepare('INSERT INTO attempts (exam_id, mode, correct, total, accuracy, detail, student_name, student_id, focus_exits, focus_log) VALUES (?,?,?,?,?,?,?,?,?,?)')
+            ->execute(array(
+                $examId, $mode, $correct, $total, $acc,
+                json_encode($details, JSON_UNESCAPED_UNICODE),
+                mb_substr(trim((string) ($sess['name'] ?? '')), 0, 100), $sid,
+                max(0, (int)($b['focus_exits'] ?? 0)),
+                json_encode($flog, JSON_UNESCAPED_UNICODE),
+            ));
+    }
     j(array('attempt_id' => (int)db()->lastInsertId(), 'correct' => $correct, 'total' => $total, 'accuracy' => $acc, 'focus_exits' => max(0, (int)($b['focus_exits'] ?? 0))));
 }
 
@@ -677,19 +818,25 @@ if ($path === '/students') {
             $mine = teacher_coached_team_ids((int)$me['id']);
             $tid = $mine ? $mine[0] : 0;
         }
+        $schoolId = 0;
         if ($tid) {
-            $t = q_one('SELECT name FROM teams WHERE id=?', array($tid));
-            if ($t) $team = $t['name'];
+            $t = q_one('SELECT name, school_id FROM teams WHERE id=?', array($tid));
+            if ($t) {
+                $team = $t['name'];
+                $schoolId = (int)($t['school_id'] ?? 0);
+            }
         }
-        db()->prepare('INSERT INTO students (name, class_name, team, note, active) VALUES (?,?,?,?,1)')
+        db()->prepare('INSERT INTO students (name, class_name, team, note, active, school_id) VALUES (?,?,?,?,1,?)')
             ->execute(array(
                 mb_substr(trim($b['name']), 0, 100), mb_substr(trim($b['class_name'] ?? ''), 0, 50),
-                $team, mb_substr(trim($b['note'] ?? ''), 0, 500),
+                $team, mb_substr(trim($b['note'] ?? ''), 0, 500), $schoolId > 0 ? $schoolId : null,
             ));
         $sid = (int)db()->lastInsertId();
+        if ($schoolId > 0) sync_school_membership_target($schoolId, $sid, 'student', true);
         if ($tid) {
             db()->prepare('INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())')
                 ->execute(array($tid, $sid, 'student'));
+            sync_team_membership_target($tid, $sid, 'student', true, 'manual');
         }
         j(array('id' => $sid));
     }
@@ -698,9 +845,10 @@ if ($path === '/students') {
 if (preg_match('#^/students/(\d+)$#', $path, $m)) {
     $sid = (int)$m[1];
     if ($method === 'PUT') {
-        require_teacher();
+        $me = require_teacher();
         $b = body();
         if (!q_one('SELECT 1 FROM students WHERE id=?', array($sid))) jerr('Không tìm thấy học sinh', 404);
+        require_same_team_or_admin($me, $sid);
         db()->prepare('UPDATE students SET name=?, class_name=?, team=?, note=? WHERE id=?')
             ->execute(array(
                 mb_substr(trim($b['name'] ?? ''), 0, 100), mb_substr(trim($b['class_name'] ?? ''), 0, 50),
@@ -709,8 +857,11 @@ if (preg_match('#^/students/(\d+)$#', $path, $m)) {
         j(array('ok' => true));
     }
     if ($method === 'DELETE') {
-        require_teacher();
+        $me = require_teacher();
+        require_same_team_or_admin($me, $sid);
         db()->prepare('DELETE FROM team_members WHERE user_id=?')->execute(array($sid));
+        remove_team_membership_target(null, $sid);
+        remove_school_membership_target($sid);
         db()->prepare('DELETE FROM students WHERE id=?')->execute(array($sid));
         j(array('ok' => true));
     }
@@ -732,9 +883,10 @@ if (preg_match('#^/students/(\d+)/active$#', $path, $m)) {
 // Giáo viên đặt lại mật khẩu cho học sinh (quên mật khẩu) — cần tài khoản giáo viên.
 if (preg_match('#^/students/(\d+)/reset-password$#', $path, $m)) {
     if ($method !== 'PUT') jerr('Không hỗ trợ.', 405);
-    require_teacher();
+    $me = require_teacher();
     $sid = (int)$m[1];
     if (!q_one('SELECT 1 FROM students WHERE id=?', array($sid))) jerr('Không tìm thấy học sinh', 404);
+    require_same_team_or_admin($me, $sid);
     $b = body();
     $npw = (string)($b['password'] ?? '');
     if (mb_strlen($npw) < 6) jerr('Mật khẩu mới ít nhất 6 ký tự.');
@@ -802,9 +954,11 @@ if ($path === '/permissions' && $method === 'GET') {
     $me = require_me();
     $r = role_of($me);
     $matrix = array();
+    $scopeMatrix = array();
     $keys = array();
-    foreach (q_all('SELECT role, perm_key, allowed FROM role_permissions ORDER BY role, perm_key') as $row) {
+    foreach (q_all('SELECT role, perm_key, allowed, scope FROM role_permissions ORDER BY role, perm_key') as $row) {
         $matrix[$row['role']][$row['perm_key']] = ((int)$row['allowed'] === 1);
+        $scopeMatrix[$row['role']][$row['perm_key']] = (string)($row['scope'] ?? default_scope_for_role((string)$row['role']));
         $keys[$row['perm_key']] = true;
     }
     j(array(
@@ -812,6 +966,7 @@ if ($path === '/permissions' && $method === 'GET') {
         'my_perms' => isset($matrix[$r]) ? $matrix[$r] : array(),
         'can_manage' => is_super_admin($me),
         'matrix' => is_super_admin($me) ? $matrix : array(),
+        'scope_matrix' => is_super_admin($me) ? $scopeMatrix : array(),
         'roles' => array('student', 'teacher', 'admin', 'super_admin'),
         'perm_keys' => array_keys($keys),
     ));
@@ -823,11 +978,15 @@ if ($path === '/permissions' && $method === 'PUT') {
     $role = trim((string)($b['role'] ?? ''));
     if (!in_array($role, array('student', 'teacher', 'admin'), true)) jerr('Không được sửa super_admin.');
     $perms = is_array($b['perms'] ?? null) ? $b['perms'] : array();
-    $st = db()->prepare('INSERT INTO role_permissions (role, perm_key, allowed) VALUES (?,?,?)
-        ON DUPLICATE KEY UPDATE allowed=VALUES(allowed)');
+    $scopes = is_array($b['scopes'] ?? null) ? $b['scopes'] : array();
+    $maxScope = scope_rank(default_scope_for_role($role));
+    $st = db()->prepare('INSERT INTO role_permissions (role, perm_key, allowed, scope) VALUES (?,?,?,?)
+        ON DUPLICATE KEY UPDATE allowed=VALUES(allowed), scope=VALUES(scope), updated_at=CURRENT_TIMESTAMP');
     $n = 0;
     foreach ($perms as $k => $v) {
-        $st->execute(array($role, mb_substr((string)$k, 0, 64), $v ? 1 : 0));
+        $scope = (string)($scopes[$k] ?? default_scope_for_role($role));
+        if (!in_array($scope, array('own', 'team', 'school', 'system'), true) || scope_rank($scope) > $maxScope) jerr('Scope không hợp lệ.');
+        $st->execute(array($role, mb_substr((string)$k, 0, 96), $v ? 1 : 0, $scope));
         $n++;
     }
     j(array('ok' => true, 'role' => $role, 'changed' => $n));
@@ -968,6 +1127,7 @@ if (preg_match('#^/teams/(\d+)$#', $path, $m)) {
     if ($method === 'DELETE') {
         require_admin();
         db()->prepare('DELETE FROM team_members WHERE team_id=?')->execute(array($tid));
+        remove_team_membership_target($tid);
         db()->prepare('DELETE FROM teams WHERE id=?')->execute(array($tid));
         j(array('ok' => true));
     }
@@ -1002,6 +1162,7 @@ if (preg_match('#^/teams/(\d+)/members$#', $path, $m)) {
             ->execute(array($tid, $uid, $role));
         db()->prepare("INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())")
             ->execute(array($tid, $uid, $role));
+        sync_team_membership_target($tid, $uid, $role, true, 'manual');
         if ($role === 'student') {
             $t = q_one('SELECT name FROM teams WHERE id=?', array($tid));
             if ($t) db()->prepare('UPDATE students SET team=? WHERE id=?')->execute(array($t['name'], $uid));
@@ -1021,6 +1182,7 @@ if (preg_match('#^/teams/(\d+)/members/(\d+)$#', $path, $m)) {
         }
         db()->prepare("UPDATE team_members SET left_at=NOW() WHERE team_id=? AND user_id=? AND left_at IS NULL")
             ->execute(array($tid, $uid));
+        remove_team_membership_target($tid, $uid);
         j(array('ok' => true));
     }
 }
@@ -1069,12 +1231,43 @@ if ($method === 'POST' && $path === '/uploads') {
     $safe = preg_replace('/[^\w.\-]/u', '_', $f['name']);
     $name = time() . '-' . mb_substr($safe, 0, 80);
     if (!move_uploaded_file($f['tmp_name'], $dir . '/' . $name)) jerr('Không lưu được file.', 500);
-    $base = PUBLIC_BASE;
-    if ($base === '') {
-        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
-        $base = ($https ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? '');
+    $teamId = (int)($_POST['team_id'] ?? 0);
+    if ($role === 'student' && $teamId <= 0) jerr('Học sinh phải tải file trong phạm vi đội tuyển.', 422);
+    if ($teamId > 0) {
+        $team = q_one('SELECT school_id FROM teams WHERE id=?', array($teamId));
+        if (!$team) { @unlink($dir . '/' . $name); jerr('Không tìm thấy đội.', 404); }
+        $allowed = is_admin($me) || in_array($teamId, teacher_coached_team_ids((int) $me['id']), true) || in_array($teamId, student_team_ids((int) $me['id']), true);
+        if (!$allowed) { @unlink($dir . '/' . $name); jerr('Bạn không có quyền tải lên đội này.', 403); }
     }
-    j(array('url' => rtrim($base, '/') . '/uploads/' . $name));
+    $mime = function_exists('mime_content_type') ? (string) mime_content_type($dir . '/' . $name) : (string) ($f['type'] ?? 'application/octet-stream');
+    $ownerType = preg_replace('/[^a-z_]/i', '', (string)($_POST['owner_type'] ?? 'upload')) ?: 'upload';
+    $ownerId = mb_substr(trim((string)($_POST['owner_id'] ?? '')), 0, 128);
+    $assetId = policy_create_file_asset($me, $name, (string)$f['name'], $mime, (int)$f['size'], $teamId, $ownerType, $ownerId);
+    if ($assetId <= 0) {
+        @unlink($dir . '/' . $name);
+        jerr('Chưa chạy migration file_assets.', 503);
+    }
+    $asset = q_one('SELECT school_id, team_id FROM file_assets WHERE id=?', array($assetId));
+    policy_audit($me, array('school_id' => $asset['school_id'] ?? null, 'team_id' => $asset['team_id'] ?? null), 'file.upload', 'file_asset', (string)$assetId, 'allow', '', array('mime_type' => $mime, 'size_bytes' => (int)$f['size']));
+    j(array('asset_id' => $assetId, 'url' => policy_file_url($assetId), 'name' => (string)$f['name'], 'mime_type' => $mime, 'size_bytes' => (int)$f['size']));
+}
+
+if ($method === 'GET' && preg_match('#^/files/([1-9][0-9]*)$#', $path, $match)) {
+    $me = session_student();
+    $asset = q_one("SELECT * FROM file_assets WHERE id=? AND status='active'", array((int)$match[1]));
+    if (!$asset || !policy_actor_file_allowed($me, $asset)) jerr('Không tìm thấy tệp.', 404);
+    $base = realpath(UPLOAD_DIR);
+    $file = realpath(rtrim(UPLOAD_DIR, '/\\') . '/' . $asset['storage_key']);
+    if ($base === false || $file === false || strpos($file, $base . DIRECTORY_SEPARATOR) !== 0 || !is_file($file)) jerr('Không tìm thấy tệp.', 404);
+    $mime = (string)($asset['mime_type'] ?: 'application/octet-stream');
+    $inline = strpos($mime, 'image/') === 0 || $mime === 'application/pdf' || $mime === 'text/plain';
+    header('Content-Type: ' . $mime);
+    header('Content-Length: ' . filesize($file));
+    header('Content-Disposition: ' . ($inline ? 'inline' : 'attachment') . "; filename*=UTF-8''" . rawurlencode((string)$asset['original_name']));
+    header('Cache-Control: private, no-store');
+    policy_audit($me, array('school_id' => $asset['school_id'], 'team_id' => $asset['team_id']), 'file.access', 'file_asset', (string)$asset['id'], 'allow');
+    readfile($file);
+    exit;
 }
 
 // ---------------- AVATAR (luu webp) ----------------
@@ -1091,8 +1284,7 @@ if ($path === '/me/avatar' && $method === 'POST') {
 
     $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
     $fname = $me['id'] . '_' . time() . '.webp';
-    $rel = '/uploads/avatars/' . $fname;           // URL goc
-    $abs = rtrim(UPLOAD_DIR, '/') . '/avatars/' . $fname; // duong dan o dis
+    $abs = rtrim(UPLOAD_DIR, '/') . '/avatars/' . $fname;
 
     $converted = false;
     if (function_exists('imagewebp')) {
@@ -1124,23 +1316,42 @@ if ($path === '/me/avatar' && $method === 'POST') {
         if (!move_uploaded_file($f['tmp_name'], $abs)) jerr('Không lưu được file.', 500);
     }
 
-    // Xoa avatar cu (chi file cua minh)
+    $storageKey = 'avatars/' . $fname;
+    $assetId = policy_create_file_asset($me, $storageKey, (string)$f['name'], 'image/webp', (int)filesize($abs), 0, 'profile', (string)$me['id']);
+    if ($assetId <= 0) {
+        @unlink($abs);
+        jerr('Chưa chạy migration file_assets.', 503);
+    }
+    $avatarUrl = policy_file_url($assetId);
     $old = q_one('SELECT avatar_url FROM students WHERE id=?', array($me['id']));
-    if (!empty($old['avatar_url']) && strpos($old['avatar_url'], '/uploads/avatars/') === 0) {
+    if (!empty($old['avatar_url']) && strpos($old['avatar_url'], '/api/files/') !== false) {
+        $oldId = (int) basename($old['avatar_url']);
+        $oldAsset = $oldId > 0 ? q_one('SELECT storage_key FROM file_assets WHERE id=? AND uploader_user_id=?', array($oldId, (int)$me['id'])) : null;
+        if ($oldAsset) {
+            $oldAbs = rtrim(UPLOAD_DIR, '/') . '/' . $oldAsset['storage_key'];
+            if (is_file($oldAbs)) @unlink($oldAbs);
+            db()->prepare("UPDATE file_assets SET status='deleted', updated_at=NOW() WHERE id=?")->execute(array($oldId));
+        }
+    } elseif (!empty($old['avatar_url']) && strpos($old['avatar_url'], '/uploads/avatars/') === 0) {
         $oldAbs = rtrim(UPLOAD_DIR, '/') . '/avatars/' . basename($old['avatar_url']);
         if (is_file($oldAbs)) @unlink($oldAbs);
     }
-    db()->prepare('UPDATE students SET avatar_url=? WHERE id=?')->execute(array($rel, $me['id']));
+    db()->prepare('UPDATE students SET avatar_url=? WHERE id=?')->execute(array($avatarUrl, $me['id']));
     $fresh = q_one('SELECT * FROM students WHERE id=?', array($me['id']));
-    j(array('ok' => true, 'avatar_url' => $rel, 'student' => public_student($fresh)));
+    j(array('ok' => true, 'avatar_url' => $avatarUrl, 'asset_id' => $assetId, 'student' => public_student($fresh)));
 }
 
 if ($path === '/me/avatar' && $method === 'DELETE') {
     $me = session_student();
     $old = q_one('SELECT avatar_url FROM students WHERE id=?', array($me['id']));
-    if (!empty($old['avatar_url']) && strpos($old['avatar_url'], '/uploads/avatars/') === 0) {
-        $oldAbs = rtrim(UPLOAD_DIR, '/') . '/avatars/' . basename($old['avatar_url']);
-        if (is_file($oldAbs)) @unlink($oldAbs);
+    if (!empty($old['avatar_url']) && strpos($old['avatar_url'], '/api/files/') !== false) {
+        $oldId = (int) basename($old['avatar_url']);
+        $oldAsset = $oldId > 0 ? q_one('SELECT storage_key FROM file_assets WHERE id=? AND uploader_user_id=?', array($oldId, (int)$me['id'])) : null;
+        if ($oldAsset) {
+            $oldAbs = rtrim(UPLOAD_DIR, '/') . '/' . $oldAsset['storage_key'];
+            if (is_file($oldAbs)) @unlink($oldAbs);
+            db()->prepare("UPDATE file_assets SET status='deleted', updated_at=NOW() WHERE id=?")->execute(array($oldId));
+        }
     }
     db()->prepare('UPDATE students SET avatar_url=NULL WHERE id=?')->execute(array($me['id']));
     j(array('ok' => true));
@@ -1151,11 +1362,7 @@ if ($path === '/me/avatar' && $method === 'DELETE') {
 // my_class_ids = teams HS dang la thanh vien (member_role='student').
 
 function my_class_ids($user_id) {
-    $ids = array();
-    foreach (q_all("SELECT team_id FROM team_members WHERE user_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')", array($user_id)) as $r) {
-        $ids[] = (int)$r['team_id'];
-    }
-    return $ids;
+    return student_team_ids((int)$user_id);
 }
 
 // teacher admin coi duoc tat ca; teacher thuong chi to chuc doi minh
@@ -1229,11 +1436,16 @@ if ($path === '/classes' && $method === 'POST') {
     $code = mb_substr(trim($b['join_code'] ?? ''), 0, 16);
     if ($code === '') $code = strtoupper(substr(md5(uniqid('', true)), 0, 6));
     if (q_one('SELECT 1 FROM teams WHERE join_code=?', array($code))) jerr('Mã lớp đã tồn tại.');
-    db()->prepare('INSERT INTO teams (name, join_code, school_id) VALUES (?,?,1)')->execute(array($name, $code));
+    $schoolId = school_membership_target_ready()
+        ? (int)(q_one("SELECT school_id FROM school_memberships WHERE user_id=? AND role IN ('teacher','admin') AND status='active' AND left_at IS NULL ORDER BY id LIMIT 1", array((int)$me['id']))['school_id'] ?? 0)
+        : (int)($me['school_id'] ?? 0);
+    if ($schoolId <= 0) jerr('Tài khoản chưa được gán vào trường.', 409);
+    db()->prepare('INSERT INTO teams (name, join_code, school_id) VALUES (?,?,?)')->execute(array($name, $code, $schoolId));
     $tid = (int)db()->lastInsertId();
     // Creator la coach cua team
     db()->prepare("INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())")
         ->execute(array($tid, $me['id'], 'coach'));
+    sync_team_membership_target($tid, $me['id'], 'coach', true, 'manual');
     j(array('id' => $tid, 'name' => $name, 'join_code' => $code));
 }
 
@@ -1243,11 +1455,20 @@ if ($path === '/classes/join' && $method === 'POST') {
     $b = body();
     $code = trim($b['join_code'] ?? '');
     if ($code === '') jerr('Thiếu mã lớp.');
-    $cl = q_one('SELECT id, name, join_code FROM teams WHERE join_code=?', array($code));
+    $cl = q_one('SELECT id, name, join_code, school_id FROM teams WHERE join_code=?', array($code));
     if (!$cl) jerr('Mã lớp không đúng.', 404);
+    $teamSchoolId = (int)($cl['school_id'] ?? 0);
+    $studentSchoolId = (int)($me['school_id'] ?? 0);
+    if ($teamSchoolId > 0 && $studentSchoolId > 0 && $teamSchoolId !== $studentSchoolId) jerr('Mã lớp không thuộc trường của bạn.', 403);
     db()->prepare("INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())")
         ->execute(array($cl['id'], $me['id'], 'student'));
-    db()->prepare('UPDATE students SET team=? WHERE id=?')->execute(array($cl['name'], $me['id']));
+    sync_team_membership_target($cl['id'], $me['id'], 'student', true, 'invite');
+    if ($teamSchoolId > 0) sync_school_membership_target($teamSchoolId, $me['id'], 'student', true);
+    if ($teamSchoolId > 0 && $studentSchoolId <= 0) {
+        db()->prepare('UPDATE students SET team=?, school_id=? WHERE id=?')->execute(array($cl['name'], $teamSchoolId, $me['id']));
+    } else {
+        db()->prepare('UPDATE students SET team=? WHERE id=?')->execute(array($cl['name'], $me['id']));
+    }
     j(array('class' => array('id' => $cl['id'], 'name' => $cl['name'], 'join_code' => $cl['join_code'])));
 }
 
@@ -1383,11 +1604,20 @@ if (preg_match('#^/assignments/(\d+)/submit$#', $path, $m)) {
     $payload = json_encode($map, JSON_UNESCAPED_UNICODE);
     $files = json_encode(array_slice(array_map(function ($f) { return mb_substr((string)$f, 0, 500); }, is_array($b['files'] ?? null) ? $b['files'] : array()), 0, 10), JSON_UNESCAPED_UNICODE);
     if ($existing) {
-        db()->prepare('UPDATE submissions SET answer=?, files=?, submitted_at=NOW(), question_scores=NULL, score=NULL, feedback=NULL, graded_at=NULL WHERE id=?')->execute(array($payload, $files, $existing['id']));
+        if (team_operations_ready()) {
+            db()->prepare('UPDATE submissions SET team_id=?, status=\'submitted\', answer=?, files=?, submitted_at=NOW(), question_scores=NULL, score=NULL, feedback=NULL, graded_at=NULL, updated_at=NOW() WHERE id=?')->execute(array((int) $a['team_id'], $payload, $files, $existing['id']));
+        } else {
+            db()->prepare('UPDATE submissions SET answer=?, files=?, submitted_at=NOW(), question_scores=NULL, score=NULL, feedback=NULL, graded_at=NULL WHERE id=?')->execute(array($payload, $files, $existing['id']));
+        }
         $sid = (int)$existing['id'];
     } else {
-        db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, files, submitted_at) VALUES (?,?,?,?,NOW())')
-            ->execute(array($aid, $me['id'], $payload, $files));
+        if (team_operations_ready()) {
+            db()->prepare('INSERT INTO submissions (assignment_id, student_id, team_id, status, answer, files, submitted_at, updated_at) VALUES (?,?,?,\'submitted\',?,?,NOW(),NOW())')
+                ->execute(array($aid, $me['id'], (int) $a['team_id'], $payload, $files));
+        } else {
+            db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, files, submitted_at) VALUES (?,?,?,?,NOW())')
+                ->execute(array($aid, $me['id'], $payload, $files));
+        }
         $sid = (int)db()->lastInsertId();
     }
     sync_submission_answers($sid, $aid, $map);
@@ -1415,12 +1645,20 @@ if (preg_match('#^/assignments/(\d+)/draft$#', $path, $m)) {
     $payload = json_encode($map, JSON_UNESCAPED_UNICODE);
     $files = json_encode(array_slice(array_map(function ($f) { return mb_substr((string)$f, 0, 500); }, is_array($b['files'] ?? null) ? $b['files'] : array()), 0, 10), JSON_UNESCAPED_UNICODE);
     if ($existing) {
-        // khong dong thoi nop: neu chua nop thi van la draft
-        db()->prepare('UPDATE submissions SET answer=?, files=? WHERE id=?')->execute(array($payload, $files, $existing['id']));
+        if (team_operations_ready()) {
+            db()->prepare('UPDATE submissions SET team_id=?, status=\'draft\', answer=?, files=?, updated_at=NOW() WHERE id=?')->execute(array((int) $a['team_id'], $payload, $files, $existing['id']));
+        } else {
+            db()->prepare('UPDATE submissions SET answer=?, files=? WHERE id=?')->execute(array($payload, $files, $existing['id']));
+        }
         $sid = (int)$existing['id'];
     } else {
-        db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, files, submitted_at) VALUES (?,?,?,?,NULL)')
-            ->execute(array($aid, $me['id'], $payload, $files));
+        if (team_operations_ready()) {
+            db()->prepare('INSERT INTO submissions (assignment_id, student_id, team_id, status, answer, files, submitted_at, updated_at) VALUES (?,?,?,\'draft\',?,?,NULL,NOW())')
+                ->execute(array($aid, $me['id'], (int) $a['team_id'], $payload, $files));
+        } else {
+            db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, files, submitted_at) VALUES (?,?,?,?,NULL)')
+                ->execute(array($aid, $me['id'], $payload, $files));
+        }
         $sid = (int)db()->lastInsertId();
     }
     sync_submission_answers($sid, $aid, $map);
@@ -1434,6 +1672,7 @@ if (preg_match('#^/assignments/(\d+)/submissions$#', $path, $m)) {
     $aid = (int)$m[1];
     $a = q_one('SELECT * FROM assignments WHERE id=?', array($aid));
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
+    require_team_coach_or_admin($me, (int)$a['team_id']);
     $rows = q_all('SELECT s.id sid, s.name, s.class_name, sub.id sub_id, sub.answer, sub.score, sub.feedback, sub.submitted_at, sub.graded_at, sub.question_scores, sub.files
         FROM team_members tm JOIN students s ON s.id=tm.user_id
         LEFT JOIN submissions sub ON sub.assignment_id=? AND sub.student_id=s.id
@@ -1480,6 +1719,8 @@ if (preg_match('#^/submissions/(\d+)/grade$#', $path, $m)) {
     $sid = (int)$m[1];
     $sub = q_one('SELECT * FROM submissions WHERE id=?', array($sid));
     if (!$sub) jerr('Không tìm thấy bài nộp.', 404);
+    $gass = q_one('SELECT team_id FROM assignments WHERE id=?', array((int)$sub['assignment_id']));
+    require_team_coach_or_admin($me, (int)($gass['team_id'] ?? 0));
     $b = body();
     $score = $b['score'] ?? null;
     if ($score === null || $score === '') jerr('Thiếu điểm.');
@@ -1489,8 +1730,13 @@ if (preg_match('#^/submissions/(\d+)/grade$#', $path, $m)) {
     // Lịch sử sửa điểm (3.7)
     db()->prepare('INSERT INTO grade_history (submission_id, score, feedback, question_scores, graded_by, graded_at) VALUES (?,?,?,?,?,?)')
         ->execute(array($sid, $sub['score'], $sub['feedback'] ?? '', $sub['question_scores'], $me['id'], $sub['graded_at']));
-    db()->prepare('UPDATE submissions SET score=?, feedback=?, question_scores=?, graded_at=NOW() WHERE id=?')
-        ->execute(array($score, mb_substr(trim($b['feedback'] ?? ''), 0, 1000), $qscJson, $sid));
+    if (team_operations_ready()) {
+        db()->prepare('UPDATE submissions SET score=?, feedback=?, question_scores=?, status=\'graded\', graded_by=?, graded_at=NOW(), updated_at=NOW() WHERE id=?')
+            ->execute(array($score, mb_substr(trim($b['feedback'] ?? ''), 0, 1000), $qscJson, (int) $me['id'], $sid));
+    } else {
+        db()->prepare('UPDATE submissions SET score=?, feedback=?, question_scores=?, graded_at=NOW() WHERE id=?')
+            ->execute(array($score, mb_substr(trim($b['feedback'] ?? ''), 0, 1000), $qscJson, $sid));
+    }
     // M3: chi tiet tung cau (items: [{idx, is_correct, points, feedback}])
     if (is_array($b['items'] ?? null)) {
         $upd = db()->prepare('UPDATE submission_answers SET is_correct=?, points=?, feedback=? WHERE submission_id=? AND assign_q_idx=?');
@@ -1573,14 +1819,18 @@ if ($path === '/me/progress' && $method === 'GET') {
     }
 
     // Bai hoc: tong + da hoan thanh + tien do theo chuyen de (chi tinh bai bat buoc)
-    $lessonsTotal = (int)q_one('SELECT COUNT(*) c FROM lessons')['c'];
-    $lessonsDone = (int)q_one('SELECT COUNT(*) c FROM lesson_completions WHERE student_id=?', array($me['id']))['c'];
-    $topicRows = q_all('SELECT t.id, t.name,
-        (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id AND COALESCE(l.required,1)=1) req_total,
-        (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id AND COALESCE(l.required,1)=1) req_done,
-        (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id) lt,
-        (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id) ld
-        FROM topics t WHERE (SELECT COUNT(*) FROM lessons l2 WHERE l2.topic_id=t.id) > 0', array($me['id'], $me['id']));
+    $lessonsTotal = (int)q_one("SELECT COUNT(*) c FROM lessons l JOIN topics t ON t.id=l.topic_id
+        WHERE COALESCE(l.status,'published')='published' AND COALESCE(t.status,'published')='published'")['c'];
+    $lessonsDone = (int)q_one("SELECT COUNT(*) c FROM lesson_completions lc
+        JOIN lessons l ON l.id=lc.lesson_id JOIN topics t ON t.id=l.topic_id
+        WHERE lc.student_id=? AND COALESCE(l.status,'published')='published' AND COALESCE(t.status,'published')='published'", array($me['id']))['c'];
+    $topicRows = q_all("SELECT t.id, t.name,
+        (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id AND COALESCE(l.status,'published')='published' AND COALESCE(l.required,1)=1) req_total,
+        (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id AND COALESCE(l.status,'published')='published' AND COALESCE(l.required,1)=1) req_done,
+        (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id AND COALESCE(l.status,'published')='published') lt,
+        (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id AND COALESCE(l.status,'published')='published') ld
+        FROM topics t WHERE COALESCE(t.status,'published')='published'
+        AND (SELECT COUNT(*) FROM lessons l2 WHERE l2.topic_id=t.id AND COALESCE(l2.status,'published')='published') > 0", array($me['id'], $me['id']));
     $topicsDone = 0; $topicsWithLessons = 0;
     $currentTopic = null;
     foreach ($topicRows as $t) {
@@ -1631,16 +1881,34 @@ if ($path === '/lessons' && $method === 'GET') {
     $topicId = trim($_GET['topic_id'] ?? '');
     if ($topicId === '') jerr('Thiếu topic_id.');
     $rows = q_all('SELECT l.id, l.topic_id, l.title, l.content, l.idx,
-        COALESCE(l.required,1) required, COALESCE(l.advanced,0) advanced, t.name topic_name,
+        COALESCE(l.required,1) required, COALESCE(l.advanced,0) advanced,
+        COALESCE(l.status,\'published\') status, l.published_at, t.name topic_name,
+        COALESCE(t.status,\'published\') topic_status,
         (SELECT 1 FROM lesson_completions lc WHERE lc.lesson_id=l.id AND lc.student_id=?) completed
         FROM lessons l JOIN topics t ON t.id=l.topic_id WHERE l.topic_id=? ORDER BY l.idx, l.id',
         array($me['id'], $topicId));
+    $isStaffL = is_role_teacher($me);
+    if (!$isStaffL) {
+        $rows = array_values(array_filter($rows, function ($r) {
+            return ($r['status'] ?? 'published') === 'published' && ($r['topic_status'] ?? 'published') === 'published';
+        }));
+    }
+    $bmap = array();
+    if ($rows) {
+        $lids = array();
+        foreach ($rows as $r) $lids[] = (int)$r['id'];
+        $in = implode(',', array_fill(0, count($lids), '?'));
+        foreach (q_all("SELECT id, lesson_id, type, content, position, metadata FROM lesson_blocks WHERE lesson_id IN ($in) ORDER BY position, id", $lids) as $b) {
+            $bmap[(int)$b['lesson_id']][] = $b;
+        }
+    }
     $lessons = array();
     $reqTotal = 0; $reqDone = 0;
     foreach ($rows as $r) {
         $r['completed'] = $r['completed'] ? true : false;
         $r['required'] = $r['required'] ? true : false;
         $r['advanced'] = $r['advanced'] ? true : false;
+        $r['blocks'] = $bmap[(int)$r['id']] ?? array();
         if ($r['required']) {
             $reqTotal++;
             if ($r['completed']) $reqDone++;
@@ -1656,8 +1924,7 @@ if ($path === '/lessons' && $method === 'GET') {
 }
 
 if ($path === '/lessons' && $method === 'POST') {
-    $me = require_me();
-    if (!is_role_teacher($me)) jerr('Khu vực giáo viên.', 403);
+    $me = require_perm('lessons.write');
     $b = body();
     $topicId = trim($b['topic_id'] ?? '');
     $title = mb_substr(trim($b['title'] ?? ''), 0, 255);
@@ -1666,15 +1933,25 @@ if ($path === '/lessons' && $method === 'POST') {
     $idx = max(1, (int)($b['idx'] ?? 1));
     $req = empty($b['required']) ? 0 : 1;
     $adv = empty($b['advanced']) ? 0 : 1;
-    db()->prepare('INSERT INTO lessons (topic_id, title, content, idx, required, advanced) VALUES (?,?,?,?,?,?)')
-        ->execute(array($topicId, $title, (string)($b['content'] ?? ''), $idx, $req, $adv));
-    j(array('id' => (int)db()->lastInsertId()));
+    $status = array_key_exists('status', $b) && $b['status'] !== null && $b['status'] !== '' ? (string)$b['status'] : 'published';
+    if (!in_array($status, array('draft', 'review', 'published', 'archived'), true)) jerr('Trạng thái không hợp lệ.');
+    $publishedAt = $status === 'published' ? date('Y-m-d H:i:s') : null;
+    db()->prepare('INSERT INTO lessons (topic_id, title, content, idx, required, advanced, status, published_at) VALUES (?,?,?,?,?,?,?,?)')
+        ->execute(array($topicId, $title, (string)($b['content'] ?? ''), $idx, $req, $adv, $status, $publishedAt));
+    $nid = (int)db()->lastInsertId();
+    // Khoi tao 1 block text tu content (M5)
+    $content = (string)($b['content'] ?? '');
+    if (trim($content) !== '') {
+        db()->prepare('INSERT INTO lesson_blocks (lesson_id, type, content, position) VALUES (?,?,?,1)')
+            ->execute(array($nid, 'text', $content));
+    }
+    j(array('id' => $nid));
 }
 
 if (preg_match('#^/lessons/(\d+)$#', $path, $m)) {
     $lid = (int)$m[1];
     if ($method === 'PUT') {
-        require_teacher();
+        require_perm('lessons.write');
         $l = q_one('SELECT * FROM lessons WHERE id=?', array($lid));
         if (!$l) jerr('Không tìm thấy bài học.', 404);
         $b = body();
@@ -1684,20 +1961,27 @@ if (preg_match('#^/lessons/(\d+)$#', $path, $m)) {
         $idx = array_key_exists('idx', $b) && $b['idx'] !== null ? max(1, (int)$b['idx']) : (int)$l['idx'];
         $req = array_key_exists('required', $b) && $b['required'] !== null ? (empty($b['required']) ? 0 : 1) : (int)($l['required'] ?? 1);
         $adv = array_key_exists('advanced', $b) && $b['advanced'] !== null ? (empty($b['advanced']) ? 0 : 1) : (int)($l['advanced'] ?? 0);
-        db()->prepare('UPDATE lessons SET title=?, content=?, idx=?, required=?, advanced=? WHERE id=?')
-            ->execute(array(mb_substr($title, 0, 255), $content, $idx, $req, $adv, $lid));
+        $status = array_key_exists('status', $b) && $b['status'] !== null && $b['status'] !== '' ? (string)$b['status'] : ($l['status'] ?? 'published');
+        if (!in_array($status, array('draft', 'review', 'published', 'archived'), true)) jerr('Trạng thái không hợp lệ.');
+        $pub = null;
+        if ($status === 'published' && empty($l['published_at'])) $pub = date('Y-m-d H:i:s');
+        db()->prepare('UPDATE lessons SET title=?, content=?, idx=?, required=?, advanced=?, status=?' . ($pub ? ', published_at=?' : '') . ' WHERE id=?')
+            ->execute($pub
+                ? array(mb_substr($title, 0, 255), $content, $idx, $req, $adv, $status, $pub, $lid)
+                : array(mb_substr($title, 0, 255), $content, $idx, $req, $adv, $status, $lid));
         j(array('ok' => true));
     }
     if ($method === 'DELETE') {
-        require_teacher();
+        require_perm('lessons.write');
         db()->prepare('DELETE FROM lesson_completions WHERE lesson_id=?')->execute(array($lid));
+        db()->prepare('DELETE FROM lesson_blocks WHERE lesson_id=?')->execute(array($lid));
         db()->prepare('DELETE FROM lessons WHERE id=?')->execute(array($lid));
         j(array('ok' => true));
     }
 }
 
 if (preg_match('#^/lessons/(\d+)/move$#', $path, $m) && $method === 'POST') {
-    require_teacher();
+    require_perm('lessons.write');
     $lid = (int)$m[1];
     $l = q_one('SELECT * FROM lessons WHERE id=?', array($lid));
     if (!$l) jerr('Không tìm thấy bài học.', 404);
@@ -1716,12 +2000,67 @@ if (preg_match('#^/lessons/(\d+)/move$#', $path, $m) && $method === 'POST') {
     j(array('ok' => true, 'moved' => true));
 }
 
+// ---------------- LESSON BLOCKS (M5) ----------------
+$BLOCK_TYPES = array('text', 'image', 'table', 'note', 'example', 'fill_blank', 'question', 'attachment');
+
+if (preg_match('#^/lessons/(\d+)/blocks$#', $path, $m)) {
+    $lid = (int)$m[1];
+    if ($method === 'GET') {
+        $me = require_me();
+        $lesson = q_one("SELECT l.id, COALESCE(l.status,'published') status, COALESCE(t.status,'published') topic_status
+            FROM lessons l JOIN topics t ON t.id=l.topic_id WHERE l.id=?", array($lid));
+        if (!$lesson) jerr('Không tìm thấy bài học.', 404);
+        if (!is_role_teacher($me) && (($lesson['status'] ?? 'published') !== 'published' || ($lesson['topic_status'] ?? 'published') !== 'published')) jerr('Không tìm thấy bài học.', 404);
+        j(q_all('SELECT id, lesson_id, type, content, position, metadata FROM lesson_blocks WHERE lesson_id=? ORDER BY position, id', array($lid)));
+    }
+    if ($method === 'POST') {
+        require_perm('lessons.write');
+        if (!q_one('SELECT 1 FROM lessons WHERE id=?', array($lid))) jerr('Không tìm thấy bài học.', 404);
+        $b = body();
+        $type = trim($b['type'] ?? 'text');
+        if (!in_array($type, $BLOCK_TYPES, true)) jerr('Loại block không hợp lệ.');
+        $pos = isset($b['position']) ? max(1, (int)$b['position']) : (int)q_one('SELECT COALESCE(MAX(position),0)+1 p FROM lesson_blocks WHERE lesson_id=?', array($lid))['p'];
+        $meta = isset($b['metadata']) ? (is_string($b['metadata']) ? $b['metadata'] : json_encode($b['metadata'], JSON_UNESCAPED_UNICODE)) : null;
+        db()->prepare('INSERT INTO lesson_blocks (lesson_id, type, content, position, metadata) VALUES (?,?,?,?,?)')
+            ->execute(array($lid, $type, (string)($b['content'] ?? ''), $pos, $meta));
+        j(array('id' => (int)db()->lastInsertId()));
+    }
+}
+
+if (preg_match('#^/blocks/(\d+)$#', $path, $m)) {
+    $bid = (int)$m[1];
+    if ($method === 'PUT') {
+        require_perm('lessons.write');
+        $bl = q_one('SELECT * FROM lesson_blocks WHERE id=?', array($bid));
+        if (!$bl) jerr('Không tìm thấy block.', 404);
+        $b = body();
+        $type = array_key_exists('type', $b) ? trim($b['type']) : $bl['type'];
+        if (!in_array($type, $BLOCK_TYPES, true)) jerr('Loại block không hợp lệ.');
+        $content = array_key_exists('content', $b) ? (string)$b['content'] : $bl['content'];
+        $pos = array_key_exists('position', $b) && $b['position'] !== null ? max(1, (int)$b['position']) : (int)$bl['position'];
+        $meta = array_key_exists('metadata', $b)
+            ? (is_string($b['metadata']) ? $b['metadata'] : json_encode($b['metadata'], JSON_UNESCAPED_UNICODE))
+            : $bl['metadata'];
+        db()->prepare('UPDATE lesson_blocks SET type=?, content=?, position=?, metadata=? WHERE id=?')
+            ->execute(array($type, $content, $pos, $meta, $bid));
+        j(array('ok' => true));
+    }
+    if ($method === 'DELETE') {
+        require_perm('lessons.write');
+        db()->prepare('DELETE FROM lesson_blocks WHERE id=?')->execute(array($bid));
+        j(array('ok' => true));
+    }
+}
+
 if (preg_match('#^/lessons/(\d+)/complete$#', $path, $m)) {
     if ($method !== 'POST') jerr('Không hỗ trợ.', 405);
     $me = require_me();
     if (is_role_teacher($me)) jerr('Giáo viên không đánh dấu bài học.', 400);
     $lid = (int)$m[1];
-    if (!q_one('SELECT 1 FROM lessons WHERE id=?', array($lid))) jerr('Không tìm thấy bài học.', 404);
+    $lesson = q_one("SELECT l.id, COALESCE(l.status,'published') status, COALESCE(t.status,'published') topic_status
+        FROM lessons l JOIN topics t ON t.id=l.topic_id WHERE l.id=?", array($lid));
+    if (!$lesson) jerr('Không tìm thấy bài học.', 404);
+    if (($lesson['status'] ?? 'published') !== 'published' || ($lesson['topic_status'] ?? 'published') !== 'published') jerr('Không tìm thấy bài học.', 404);
     $b = body();
     if (!empty($b['undo'])) {
         db()->prepare('DELETE FROM lesson_completions WHERE student_id=? AND lesson_id=?')->execute(array($me['id'], $lid));
@@ -1784,7 +2123,7 @@ if ($path === '/materials') {
         j(q_all($sql, $p));
     }
     if ($method === 'POST') {
-        $me = require_teacher();
+        $me = require_perm('materials.write');
         $b = body();
         if (trim($b['title'] ?? '') === '') jerr('Thiếu tên tài liệu');
         db()->prepare('INSERT INTO materials (subject_id, topic_id, title, description, file_url, file_type, grade, created_by) VALUES (?,?,?,?,?,?,?,?)')
@@ -1802,7 +2141,7 @@ if ($path === '/materials') {
 }
 
 if (preg_match('#^/materials/(\d+)$#', $path, $m) && $method === 'DELETE') {
-    require_teacher();
+    require_perm('materials.write');
     db()->prepare('DELETE FROM materials WHERE id=?')->execute(array((int)$m[1]));
     j(array('ok' => true));
 }
@@ -1960,7 +2299,7 @@ function ai_normalize($type, $parsed) {
 
 // POST /ai/generate — blocking (du lieu JSON day du).
 if ($path === '/ai/generate' && $method === 'POST') {
-    require_teacher();
+    require_perm('studio.manage');
     $b = body();
     $type = trim($b['type'] ?? '');
     if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze'), true)) jerr('type khong hop le.');
@@ -1973,7 +2312,7 @@ if ($path === '/ai/generate' && $method === 'POST') {
 
 // POST /ai/generate-stream — SSE: delta... rồi result/error. Hien realtime o client.
 if ($path === '/ai/generate-stream' && $method === 'POST') {
-    require_teacher();
+    require_perm('studio.manage');
     $b = body();
     $type = trim($b['type'] ?? '');
     if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze'), true)) jerr('type khong hop le.');
@@ -2023,7 +2362,7 @@ if ($path === '/flashcards' && $method === 'GET') {
 }
 
 if ($path === '/flashcards' && $method === 'POST') {
-    $me = require_teacher();
+    $me = require_perm('bank.manage');
     $b = body();
     $topicId = trim($b['topic_id'] ?? '');
     if ($topicId === '' || !q_one('SELECT 1 FROM topics WHERE id=?', array($topicId))) jerr('Thiếu/chưa đúng topic.');
@@ -2046,7 +2385,7 @@ if ($path === '/flashcards' && $method === 'POST') {
 if (preg_match('#^/flashcards/(\d+)$#', $path, $m)) {
     $fid = (int)$m[1];
     if ($method === 'PUT') {
-        require_teacher();
+        require_perm('bank.manage');
         $b = body();
         if (!q_one('SELECT 1 FROM flashcards WHERE id=?', array($fid))) jerr('Không tìm thấy thẻ.', 404);
         db()->prepare('UPDATE flashcards SET front=?, back=? WHERE id=?')
@@ -2054,7 +2393,7 @@ if (preg_match('#^/flashcards/(\d+)$#', $path, $m)) {
         j(array('ok' => true));
     }
     if ($method === 'DELETE') {
-        require_teacher();
+        require_perm('bank.manage');
         db()->prepare('DELETE FROM flashcards WHERE id=?')->execute(array($fid));
         j(array('ok' => true));
     }

@@ -1,0 +1,13 @@
+Options -Indexes
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+  RewriteRule ^api(?:/|$) - [L]
+  RewriteRule ^(?:database|src|tests|python-core)(?:/|$) - [L]
+  RewriteRule ^ - [index.html,L]
+</IfModule>
+<FilesMatch "^\.">
+  Require all denied
+</FilesMatch>

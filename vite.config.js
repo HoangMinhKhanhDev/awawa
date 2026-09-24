@@ -29,36 +29,8 @@ export default defineConfig({
       // Bật service worker cả ở dev để test cài PWA qua tunnel ngrok https
       devOptions: { enabled: true, type: 'module' },
       workbox: {
-        // Offline: app shell + bài học/nội dung học (GET only).
-        // POST submit/draft/grade luôn network — không cache.
-        runtimeCaching: [
-          {
-            // Danh mục học: môn / chuyên đề / câu hỏi / bài học / học liệu / bài tập (GET)
-            urlPattern: ({ url }) =>
-              /^\/(api\/)?(subjects|topics|questions|lessons|materials|assignments)(\/|$)/.test(url.pathname) ||
-              url.pathname.includes('/lessons') ||
-              url.pathname.includes('/materials'),
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'lessons-cache',
-              expiration: { maxEntries: 400, maxAgeSeconds: 7 * 24 * 3600 },
-              networkTimeoutSeconds: 4,
-            },
-          },
-          {
-            // Progress / stats nhẹ — hiển thị được offline
-            urlPattern: ({ url }) =>
-              url.pathname.includes('/me/progress') ||
-              url.pathname.includes('/stats/overview') ||
-              url.pathname.includes('/notifications'),
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'progress-cache',
-              expiration: { maxEntries: 50, maxAgeSeconds: 24 * 3600 },
-              networkTimeoutSeconds: 4,
-            },
-          },
-        ],
+        cleanupOutdatedCaches: true,
+        runtimeCaching: [],
       }
     })
   ],
@@ -76,5 +48,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true
+  },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    clearMocks: true,
   }
 })

@@ -23,7 +23,7 @@ define('DB_PASS', envv('DB_PASS', ''));
 // Token chia sẻ: nếu để trống = mở như bản LAN (tiện test).
 // Nên đặt 1 chuỗi ngẫu nhiên, frontend gửi kèm header X-Api-Token.
 define('API_TOKEN', envv('API_TOKEN', ''));
-define('UPLOAD_DIR', envv('UPLOAD_DIR', __DIR__ . '/../uploads'));
+define('UPLOAD_DIR', envv('UPLOAD_DIR', __DIR__ . '/storage/uploads'));
 define('PUBLIC_BASE', envv('PUBLIC_BASE', '')); // VD: https://herbspalab.com — để trống = tự đoán
 define('MAX_UPLOAD_MB', (int)envv('MAX_UPLOAD_MB', '5'));
 // Agnes AI (OpenAI-compatible) — chi doc tu local.php / env, KHONG commit key
@@ -72,11 +72,18 @@ function body() {
 
 function check_token($path) {
     if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') return;
-    if ($path === '/health') return; // cho widget trạng thái kiểm tra không cần token
-    if ($path === '/auth/register' || $path === '/auth/login') return; // public cho học sinh tự đăng ký/đăng nhập
-    if (API_TOKEN === '') return;    // chưa đặt token = mở (chế độ test)
-    $got = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
-    if (!hash_equals(API_TOKEN, (string)$got)) jerr('Sai API token.', 403);
+    if ($path === '/health') return;
+    if ($path === '/auth/register' || $path === '/auth/login' || $path === '/auth/forgot-password' || $path === '/auth/reset-password') return;
+    $api = trim((string)($_SERVER['HTTP_X_API_TOKEN'] ?? ''));
+    if (API_TOKEN !== '' && $api !== '' && hash_equals(API_TOKEN, $api)) return;
+    $token = trim((string)($_SERVER['HTTP_X_SESSION_TOKEN'] ?? ''));
+    if (!preg_match('/^[a-f0-9]{64}$/', $token)) jerr('Chưa đăng nhập.', 401);
+    try {
+        $session = q_one('SELECT s.`token_hash` FROM `sessions` s INNER JOIN `students` st ON st.`id` = s.`student_id` WHERE s.`token_hash`=? AND s.`expires_at` > NOW() AND st.`active` = 1', array(hash('sha256', $token)));
+    } catch (Throwable $exception) {
+        $session = q_one('SELECT s.`token_hash` FROM `sessions` s INNER JOIN `students` st ON st.`id` = s.`student_id` WHERE s.`token_hash`=? AND s.`expires_at` > NOW()', array(hash('sha256', $token)));
+    }
+    if (!$session) jerr('Phiên đăng nhập hết hạn.', 401);
 }
 
 // ---------------- AUTH HỌC SINH (dùng chung) ----------------
@@ -128,6 +135,10 @@ function session_student() {
     $h = hash('sha256', $tok);
     $s = q_one('SELECT s.expires_at, st.* FROM sessions s JOIN students st ON st.id=s.student_id WHERE s.token_hash=?', array($h));
     if (!$s) jerr('Phiên đăng nhập hết hạn.', 401);
+    if (!array_key_exists('active', $s) || (int)$s['active'] !== 1) {
+        db()->prepare('DELETE FROM sessions WHERE token_hash=?')->execute(array($h));
+        jerr('Tài khoản đã bị khóa.', 403);
+    }
     if (strtotime($s['expires_at']) < time()) {
         db()->prepare('DELETE FROM sessions WHERE token_hash=?')->execute(array($h));
         jerr('Phiên đăng nhập hết hạn.', 401);
@@ -142,7 +153,7 @@ function optional_session() {
     if ($tok === '' || !preg_match('/^[a-f0-9]{64}$/', $tok)) return null;
     $h = hash('sha256', $tok);
     $s = q_one('SELECT s.expires_at, st.* FROM sessions s JOIN students st ON st.id=s.student_id WHERE s.token_hash=?', array($h));
-    if (!$s || strtotime($s['expires_at']) < time()) return null;
+    if (!$s || !array_key_exists('active', $s) || (int)$s['active'] !== 1 || strtotime($s['expires_at']) < time()) return null;
     unset($s['expires_at']);
     return public_student($s);
 }
@@ -187,15 +198,38 @@ function role_of($me) {
 }
 
 function has_perm($me, $perm_key) {
+    return perm_allows($me, $perm_key, array());
+}
+
+// Cap scope: own < team < school < system
+function scope_rank($scope) {
+    static $r = array('own' => 0, 'team' => 1, 'school' => 2, 'system' => 3);
+    return isset($r[$scope]) ? $r[$scope] : 0;
+}
+
+function default_scope_for_role($role) {
+    if ($role === 'super_admin') return 'system';
+    if ($role === 'admin') return 'school';
+    if ($role === 'teacher') return 'team';
+    return 'own';
+}
+
+// $ctx: array('scope' => 'team'|'school'|'own', 'team_id' => int?)
+function perm_allows($me, $perm_key, $ctx = array()) {
     if (!$me) return false;
     $r = role_of($me);
-    if ($r === 'super_admin') return true;
-    $row = q_one('SELECT allowed FROM role_permissions WHERE role=? AND perm_key=?', array($r, $perm_key));
-    if (!$row) {
-        return is_staff($me) && (substr($perm_key, -5) === 'view' || substr($perm_key, -4) === 'read'
-            || substr($perm_key, -4) === 'self' || substr($perm_key, -7) === 'manage');
+    $row = q_one('SELECT allowed, scope FROM role_permissions WHERE role=? AND perm_key=?', array($r, $perm_key));
+    if (!$row) return false;
+    if (!(int)$row['allowed']) return false;
+    $have = trim($row['scope'] ?? '');
+    if ($have === '') $have = default_scope_for_role($r);
+    $need = isset($ctx['scope']) ? $ctx['scope'] : 'own';
+    if (scope_rank($have) < scope_rank($need)) return false;
+    // Rang buoc team cu the: teacher phai coach dung team
+    if ($need === 'team' && $r === 'teacher' && isset($ctx['team_id'])) {
+        return in_array((int)$ctx['team_id'], teacher_coached_team_ids((int)$me['id']), true);
     }
-    return (int)$row['allowed'] === 1;
+    return true;
 }
 
 function require_perm($perm_key) {
@@ -205,18 +239,125 @@ function require_perm($perm_key) {
     return $me;
 }
 
+// require_perm kem scope: $ctx = array('scope' => 'team', 'team_id' => 123)
+function require_perm_scope($perm_key, $ctx = array()) {
+    $me = optional_session();
+    if (!$me) jerr('Chưa đăng nhập.', 401);
+    if (!perm_allows($me, $perm_key, $ctx)) jerr('Bạn không có quyền: ' . $perm_key, 403);
+    return $me;
+}
+
+function school_membership_target_ready() {
+    try {
+        return (bool)q_one("SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='school_memberships'");
+    } catch (Throwable $exception) {
+        return false;
+    }
+}
+
+function sync_school_membership_target($school_id, $user_id, $role, $active = true) {
+    if (!school_membership_target_ready() || !$school_id) return;
+    $role = in_array($role, array('admin', 'teacher', 'student'), true) ? $role : 'student';
+    db()->prepare(
+        'INSERT INTO school_memberships (school_id,user_id,role,status,joined_at,left_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP,?) ON DUPLICATE KEY UPDATE role=VALUES(role), status=VALUES(status), left_at=VALUES(left_at)'
+    )->execute(array((int)$school_id, (int)$user_id, $role, $active ? 'active' : 'inactive', $active ? null : date('Y-m-d H:i:s')));
+}
+
+function remove_school_membership_target($user_id, $school_id = null) {
+    if (!school_membership_target_ready()) return;
+    $sql = 'DELETE FROM school_memberships WHERE user_id=?';
+    $params = array((int)$user_id);
+    if ($school_id !== null) { $sql .= ' AND school_id=?'; $params[] = (int)$school_id; }
+    db()->prepare($sql)->execute($params);
+}
+
+function team_membership_target_ready() {
+    try {
+        return (bool)q_one("SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='team_memberships'");
+    } catch (Throwable $exception) {
+        return false;
+    }
+}
+
+function sync_team_membership_target($team_id, $user_id, $role, $active = true, $source = 'manual', $access = 'include', $source_class_id = null) {
+    if (!team_membership_target_ready()) return;
+    $role = in_array($role, array('student', 'coach'), true) ? $role : 'student';
+    $source = in_array($source, array('manual', 'class', 'invite', 'team_members'), true) ? $source : 'manual';
+    $access = $access === 'exclude' ? 'exclude' : 'include';
+    $existing = q_one('SELECT id, source FROM team_memberships WHERE team_id=? AND user_id=? AND role=?', array((int)$team_id, (int)$user_id, $role));
+    if ($source === 'class' && $existing && (string) $existing['source'] === 'manual') return;
+    $team = q_one('SELECT school_id FROM teams WHERE id=?', array((int)$team_id));
+    $school_id = $team && $team['school_id'] !== null ? (int)$team['school_id'] : null;
+    $status = $active ? 'active' : 'inactive';
+    $leftAt = $active ? null : date('Y-m-d H:i:s');
+    db()->prepare(
+        'INSERT INTO team_memberships (team_id,user_id,school_id,role,access,status,source_class_id,joined_at,left_at,source) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?,?) ON DUPLICATE KEY UPDATE school_id=VALUES(school_id), access=VALUES(access), status=VALUES(status), source_class_id=VALUES(source_class_id), left_at=VALUES(left_at), source=VALUES(source)'
+    )->execute(array((int)$team_id, (int)$user_id, $school_id, $role, $access, $status, $source_class_id === null ? null : (int)$source_class_id, $leftAt, $source));
+}
+
+function remove_team_membership_target($team_id, $user_id = null, $role = null, $source = null) {
+    if (!team_membership_target_ready()) return;
+    $sql = 'DELETE FROM team_memberships WHERE 1=1';
+    $params = array();
+    if ($team_id !== null) { $sql .= ' AND team_id=?'; $params[] = (int)$team_id; }
+    if ($user_id !== null) { $sql .= ' AND user_id=?'; $params[] = (int)$user_id; }
+    if ($role !== null) { $sql .= ' AND role=?'; $params[] = (string)$role; }
+    if ($source !== null) { $sql .= ' AND source=?'; $params[] = (string)$source; }
+    db()->prepare($sql)->execute($params);
+}
+
+function team_operations_ready() {
+    try {
+        return (bool)q_one("SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='submissions' AND column_name='team_id'");
+    } catch (Throwable $exception) {
+        return false;
+    }
+}
+
 function teacher_coached_team_ids($user_id) {
-    $rows = q_all(
-        "SELECT team_id FROM team_members WHERE user_id=? AND member_role='coach' AND (left_at IS NULL OR left_at='')",
-        array($user_id)
-    );
+    if (team_membership_target_ready()) {
+        $rows = q_all("SELECT team_id FROM team_memberships WHERE user_id=? AND role='coach' AND access='include' AND status='active' AND left_at IS NULL", array((int)$user_id));
+    } else {
+        $rows = q_all("SELECT team_id FROM team_members WHERE user_id=? AND member_role='coach' AND (left_at IS NULL OR left_at='')", array((int)$user_id));
+    }
     $ids = array();
     foreach ($rows as $r) $ids[] = (int)$r['team_id'];
     return $ids;
 }
 
+function student_team_ids($sid) {
+    if (team_membership_target_ready()) {
+        $rows = q_all("SELECT team_id FROM team_memberships WHERE user_id=? AND role='student' AND access='include' AND status='active' AND left_at IS NULL", array((int)$sid));
+    } else {
+        $rows = q_all("SELECT team_id FROM team_members WHERE user_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')", array((int)$sid));
+    }
+    $ids = array();
+    foreach ($rows as $r) $ids[] = (int)$r['team_id'];
+    return $ids;
+}
+
+// M4: teacher chi tac dong HS co chung team; admin/super_admin qua het
+function require_same_team_or_admin($me, $sid) {
+    if (is_admin($me)) return $me;
+    $mine = teacher_coached_team_ids((int)$me['id']);
+    if (!array_intersect($mine, student_team_ids((int)$sid))) {
+        jerr('Học sinh không thuộc đội bạn phụ trách.', 403);
+    }
+    return $me;
+}
+
+// M4: teacher chi tac dong team minh coach; admin/super_admin qua het
+function require_team_coach_or_admin($me, $team_id) {
+    if (is_admin($me)) return $me;
+    if (!in_array((int)$team_id, teacher_coached_team_ids((int)$me['id']), true)) {
+        jerr('Bạn không phụ trách đội này.', 403);
+    }
+    return $me;
+}
+
 // Tự động thêm bảng Phase 1a nếu chưa có (safe chạy nhiều lần)
 function ensure_school_schema() {
+    if (getenv('AWAWA_MIGRATIONS_REQUIRED') === '1') return;
     static $done = false;
     if ($done) return;
     $done = true;
@@ -332,7 +473,48 @@ function ensure_gd_schema() {
         role VARCHAR(32) NOT NULL,
         perm_key VARCHAR(64) NOT NULL,
         allowed TINYINT DEFAULT 0,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY uq_rp (role, perm_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    // M4: cot scope (own/team/school/system)
+    $rpCols = array();
+    foreach (q_all('SHOW COLUMNS FROM role_permissions') as $c) $rpCols[] = $c['Field'];
+    if (!in_array('scope', $rpCols, true)) {
+        db()->exec("ALTER TABLE role_permissions ADD COLUMN scope VARCHAR(16) DEFAULT ''");
+    }
+    if (!in_array('updated_at', $rpCols, true)) {
+        db()->exec("ALTER TABLE role_permissions ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    // M1: schools + school_id (idempotent)
+    db()->exec("CREATE TABLE IF NOT EXISTS schools (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(200) NOT NULL,
+        code VARCHAR(32) NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    $addCol = function ($table, $col, $ddl) {
+        foreach (q_all("SHOW COLUMNS FROM `$table`") as $c) {
+            if ($c['Field'] === $col) return;
+        }
+        db()->exec("ALTER TABLE `$table` ADD COLUMN `$col` $ddl");
+    };
+    $addCol('students', 'school_id', 'INT NULL');
+    $addCol('subjects', 'school_id', 'INT NULL');
+    $addCol('teams', 'school_id', 'INT NULL');
+    $addCol('teams', 'join_code', 'VARCHAR(16) NULL');
+    $addCol('assignments', 'team_id', 'INT NULL');
+    $addCol('assign_questions', 'question_id', 'INT NULL');
+    db()->exec("CREATE TABLE IF NOT EXISTS submission_answers (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        submission_id INT NOT NULL,
+        question_id INT NULL,
+        assign_q_idx INT NULL,
+        answer TEXT,
+        is_correct TINYINT NULL,
+        points FLOAT NULL,
+        feedback VARCHAR(1000) DEFAULT '',
+        INDEX idx_sa_sub (submission_id),
+        INDEX idx_sa_q (question_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     seed_role_permissions();
 }
@@ -385,9 +567,14 @@ function seed_role_permissions() {
     static $done = false;
     if ($done) return;
     $done = true;
-    $st = db()->prepare('INSERT IGNORE INTO role_permissions (role, perm_key, allowed) VALUES (?,?,?)');
+    $st = db()->prepare('INSERT IGNORE INTO role_permissions (role, perm_key, allowed, scope) VALUES (?,?,?,?)');
     foreach (default_role_perms() as $role => $perms) {
-        foreach ($perms as $k => $v) $st->execute(array($role, $k, (int)$v));
+        foreach ($perms as $k => $v) $st->execute(array($role, $k, (int)$v, default_scope_for_role($role)));
+    }
+    // Backfill scope cho rows cu (INSERT IGNORE khong update)
+    $up = db()->prepare('UPDATE role_permissions SET scope=? WHERE role=? AND (scope IS NULL OR scope=?)');
+    foreach (array('student', 'teacher', 'admin', 'super_admin') as $r) {
+        $up->execute(array(default_scope_for_role($r), $r, ''));
     }
 }
 

@@ -226,13 +226,13 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
   const { toast, confirmBox, errMsg } = useUI()
   const [openId, setOpenId] = useState(null)
   const [meta, setMeta] = useState({ lessons: [], required_total: 0, required_done: 0, topic_complete: false })
-  const [newLesson, setNewLesson] = useState({ title: '', content: '', required: true, advanced: false })
+  const [newLesson, setNewLesson] = useState({ title: '', content: '', required: true, advanced: false, status: 'published' })
   const [showAdd, setShowAdd] = useState(false)
   const [editingLesson, setEditingLesson] = useState(null)
-  const [editForm, setEditForm] = useState({ title: '', content: '', required: true, advanced: false })
+  const [editForm, setEditForm] = useState({ title: '', content: '', required: true, advanced: false, status: 'published' })
   const [busy, setBusy] = useState(false)
   const [editingTopic, setEditingTopic] = useState(null)
-  const [topicForm, setTopicForm] = useState({ name: '', description: '' })
+  const [topicForm, setTopicForm] = useState({ name: '', description: '', parent_id: '', position: '', status: 'published' })
 
   const lessons = meta.lessons || []
 
@@ -270,8 +270,9 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
       await api.createLesson({
         topic_id: openId, title: newLesson.title.trim(), content: newLesson.content,
         idx: lessons.length + 1, required: newLesson.required ? 1 : 0, advanced: newLesson.advanced ? 1 : 0,
+        status: newLesson.status || 'published',
       })
-      setNewLesson({ title: '', content: '', required: true, advanced: false })
+      setNewLesson({ title: '', content: '', required: true, advanced: false, status: 'published' })
       setShowAdd(false)
       await loadLessons(openId)
       toast('Đã thêm bài học.')
@@ -287,6 +288,7 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
       await api.updateLesson(editingLesson.id, {
         title: editForm.title.trim(), content: editForm.content,
         required: editForm.required ? 1 : 0, advanced: editForm.advanced ? 1 : 0,
+        status: editForm.status || 'published',
       })
       setEditingLesson(null)
       await loadLessons(openId)
@@ -313,9 +315,26 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
     setBusy(false)
   }
 
+  const togglePublish = async (l) => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await api.updateLesson(l.id, { status: (l.status || 'published') === 'published' ? 'draft' : 'published' })
+      await loadLessons(openId)
+      toast('Đã cập nhật trạng thái.')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBusy(false)
+  }
+
   const startEditTopic = (t) => {
     setEditingTopic(t)
-    setTopicForm({ name: t.name, description: t.description || '' })
+    setTopicForm({ name: t.name, description: t.description || '', parent_id: t.parent_id || '', position: t.position ?? '', status: t.status || 'published' })
+  }
+
+  const statusBadge = (st) => {
+    if (st === 'published' || !st) return null
+    const label = st === 'draft' ? 'Bản nháp' : st === 'review' ? 'Chờ duyệt' : 'Lưu trữ'
+    return <span className="badge amber" style={{ marginLeft: 6 }}>{label}</span>
   }
 
   const saveTopic = async () => {
@@ -323,7 +342,13 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
     if (!topicForm.name.trim()) { toast('Nhập tên chuyên đề.', 'warn'); return }
     setBusy(true)
     try {
-      await api.updateTopic(editingTopic.id, topicForm)
+      await api.updateTopic(editingTopic.id, {
+        name: topicForm.name.trim(),
+        description: topicForm.description,
+        parent_id: topicForm.parent_id || null,
+        position: topicForm.position === '' ? undefined : Number(topicForm.position),
+        status: topicForm.status || 'published',
+      })
       setEditingTopic(null)
       onChanged?.()
       toast('Đã lưu chuyên đề.')
@@ -391,6 +416,15 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
                   <input type="checkbox" checked={newLesson.advanced} onChange={(e) => setNewLesson({ ...newLesson, advanced: e.target.checked })} />
                   Nâng cao
                 </label>
+                <label className="row small" style={{ gap: 6 }}>
+                  Trạng thái:
+                  <select className="select" style={{ width: 'auto' }} value={newLesson.status} onChange={(e) => setNewLesson({ ...newLesson, status: e.target.value })}>
+                    <option value="published">Xuất bản</option>
+                    <option value="draft">Bản nháp</option>
+                    <option value="review">Chờ duyệt</option>
+                    <option value="archived">Lưu trữ</option>
+                  </select>
+                </label>
               </div>
               <div className="row" style={{ marginTop: 8 }}>
                 <button className="btn primary" onClick={addLesson} disabled={busy}>Lưu bài học</button>
@@ -405,6 +439,30 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
               <input className="input" id="tp-name" value={topicForm.name} onChange={(e) => setTopicForm({ ...topicForm, name: e.target.value })} />
               <label className="lbl" htmlFor="tp-desc">Mô tả</label>
               <textarea className="textarea" id="tp-desc" value={topicForm.description} onChange={(e) => setTopicForm({ ...topicForm, description: e.target.value })} />
+              <div className="grid c3" style={{ marginTop: 8 }}>
+                <div>
+                  <label className="lbl">Chuyên đề cha</label>
+                  <select className="select" value={topicForm.parent_id || ''} onChange={(e) => setTopicForm({ ...topicForm, parent_id: e.target.value })}>
+                    <option value="">— Gốc —</option>
+                    {topics.filter((x) => x.id !== editingTopic.id).map((x) => (
+                      <option key={x.id} value={x.id}>{x.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="lbl">Vị trí</label>
+                  <input className="input" type="number" min="0" value={topicForm.position} onChange={(e) => setTopicForm({ ...topicForm, position: e.target.value })} />
+                </div>
+                <div>
+                  <label className="lbl">Trạng thái</label>
+                  <select className="select" value={topicForm.status || 'published'} onChange={(e) => setTopicForm({ ...topicForm, status: e.target.value })}>
+                    <option value="published">Xuất bản</option>
+                    <option value="draft">Bản nháp</option>
+                    <option value="review">Chờ duyệt</option>
+                    <option value="archived">Lưu trữ</option>
+                  </select>
+                </div>
+              </div>
               <div className="row" style={{ marginTop: 8 }}>
                 <button className="btn primary" onClick={saveTopic} disabled={busy}>Lưu</button>
                 <button className="btn" onClick={() => setEditingTopic(null)}>Hủy</button>
@@ -421,13 +479,18 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
                 {String(l.idx ?? i + 1).padStart(2, '0')}. {l.title}
                 {l.required !== false && <span className="badge blue" style={{ marginLeft: 6 }}>Bắt buộc</span>}
                 {l.advanced && <span className="badge amber" style={{ marginLeft: 4 }}>Nâng cao</span>}
+                {teacher && statusBadge(l.status)}
               </b>
               <div className="row">
                 {teacher && (
                   <>
                     <button className="btn sm" aria-label="Lên" onClick={() => moveLesson(l, 'up')} disabled={busy || i === 0}>↑</button>
                     <button className="btn sm" aria-label="Xuống" onClick={() => moveLesson(l, 'down')} disabled={busy || i === lessons.length - 1}>↓</button>
-                    <button className="btn sm" onClick={() => { setEditingLesson(l); setEditForm({ title: l.title, content: l.content || '', required: l.required !== false, advanced: !!l.advanced }) }}><IconPencil className="icn sm" /></button>
+                    <button className="btn sm" title={(l.status || 'published') === 'published' ? 'Chuyển về nháp' : 'Xuất bản'}
+                      onClick={() => togglePublish(l)} disabled={busy}>
+                      {(l.status || 'published') === 'published' ? 'Gỡ xuống' : 'Xuất bản'}
+                    </button>
+                    <button className="btn sm" onClick={() => { setEditingLesson(l); setEditForm({ title: l.title, content: l.content || '', required: l.required !== false, advanced: !!l.advanced, status: l.status || 'published' }) }}><IconPencil className="icn sm" /></button>
                     <button className="btn danger sm" onClick={() => removeLesson(l)}><IconX className="icn sm" /></button>
                   </>
                 )}
@@ -454,6 +517,15 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
                     <input type="checkbox" checked={editForm.advanced} onChange={(e) => setEditForm({ ...editForm, advanced: e.target.checked })} />
                     Nâng cao
                   </label>
+                  <label className="row small" style={{ gap: 6 }}>
+                    Trạng thái:
+                    <select className="select" style={{ width: 'auto' }} value={editForm.status || 'published'} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}>
+                      <option value="published">Xuất bản</option>
+                      <option value="draft">Bản nháp</option>
+                      <option value="review">Chờ duyệt</option>
+                      <option value="archived">Lưu trữ</option>
+                    </select>
+                  </label>
                 </div>
                 <div className="row" style={{ marginTop: 8 }}>
                   <button className="btn primary" onClick={saveEditLesson} disabled={busy}>Lưu</button>
@@ -461,26 +533,30 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
                 </div>
               </div>
             )}
-            {l.content && !editingLesson && <div style={{ whiteSpace: 'pre-wrap', marginTop: 8, fontSize: 14, lineHeight: 1.65 }}>{l.content}</div>}
+            {l.content && !editingLesson && (!Array.isArray(l.blocks) || l.blocks.length === 0) && <div style={{ whiteSpace: 'pre-wrap', marginTop: 8, fontSize: 14, lineHeight: 1.65 }}>{l.content}</div>}
+            <LessonBlocks lesson={l} teacher={teacher} onChanged={() => loadLessons(openId)} />
           </div>
         ))}
       </>
     )
   }
 
+  const ordered = sortTopicTree(topics)
   return (
     <div className="card">
       <h3>Danh sách chuyên đề</h3>
       {topics.length === 0 && <div className="empty">Chưa có chuyên đề cho môn này.</div>}
-      {topics.map((t, i) => {
+      {ordered.map((t, i) => {
         const nAssign = assignments.filter((a) => a.topic_id === t.id).length
+        const depth = topicDepth(topics, t)
         return (
           <div key={t.id} className="board-row clickable" role="button" tabIndex={0}
+            style={depth ? { marginLeft: depth * 22 } : undefined}
             onClick={() => setOpenId(t.id)}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(t.id) } }}>
             <span className="rank">{String(i + 1).padStart(2, '0')}</span>
             <div>
-              <b>{t.name}</b>
+              <b>{depth ? '└ ' : ''}{t.name}{teacher && statusBadge(t.status)}</b>
               {t.description && <div className="small muted">{t.description}</div>}
               <div className="small muted">
                 {t.lesson_count != null ? `${t.lesson_count} bài` : ''}{nAssign ? ` · ${nAssign} bài tập` : ''}{t.grade ? ` · lớp ${t.grade}` : ''}
@@ -491,6 +567,261 @@ function TopicLessons({ topics, assignments, teacher, subjectId, onChanged }) {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+function topicDepth(topics, t) {
+  let d = 0
+  let cur = t
+  const seen = new Set()
+  while (cur?.parent_id && !seen.has(cur.id) && d < 8) {
+    seen.add(cur.id)
+    cur = topics.find((x) => x.id === cur.parent_id)
+    if (cur) d++
+    else break
+  }
+  return d
+}
+
+function sortTopicTree(topics) {
+  const byParent = new Map()
+  for (const t of topics) {
+    const k = t.parent_id || '__root__'
+    if (!byParent.has(k)) byParent.set(k, [])
+    byParent.get(k).push(t)
+  }
+  for (const arr of byParent.values()) {
+    arr.sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || String(a.name || '').localeCompare(String(b.name || ''), 'vi'))
+  }
+  const out = []
+  const walk = (pid, guard = 0) => {
+    if (guard > 9) return
+    for (const t of byParent.get(pid) || []) {
+      out.push(t)
+      walk(t.id, guard + 1)
+    }
+  }
+  walk('__root__')
+  // Orphan (cha không tồn tại trong list) → gắn cuối để không mất
+  for (const t of topics) {
+    if (!out.includes(t)) out.push(t)
+  }
+  return out
+}
+
+/* ---------- BLOCKS của bài học (M5: text/image/table/note/example/fill_blank/question/attachment) ---------- */
+const BLOCK_TYPE_LABELS = {
+  text: 'Văn bản',
+  image: 'Hình ảnh',
+  table: 'Bảng',
+  note: 'Ghi chú',
+  example: 'Ví dụ',
+  fill_blank: 'Điền khuyết',
+  question: 'Câu hỏi',
+  attachment: 'Tệp đính kèm',
+}
+const BLOCK_TYPES = Object.keys(BLOCK_TYPE_LABELS)
+
+const looksLikeUrl = (s) => /^(https?:\/\/|\/|data:image\/)/i.test((s || '').trim())
+
+function BlockContent({ b }) {
+  const c = b.content || ''
+  if (b.type === 'image' && looksLikeUrl(c)) {
+    return (
+      <div style={{ marginTop: 6 }}>
+        <img src={c.trim()} alt="" style={{ maxWidth: '100%', borderRadius: 8 }} loading="lazy" />
+      </div>
+    )
+  }
+  if (b.type === 'attachment' && looksLikeUrl(c)) {
+    return (
+      <div style={{ marginTop: 6 }}>
+        <a className="btn sm" href={c.trim()} target="_blank" rel="noreferrer">Mở tệp đính kèm</a>
+      </div>
+    )
+  }
+  if (b.type === 'table') {
+    return <pre style={{ marginTop: 6, fontSize: 13, lineHeight: 1.6, overflowX: 'auto', background: 'var(--line-soft)', borderRadius: 8, padding: 10, whiteSpace: 'pre-wrap' }}>{c}</pre>
+  }
+  return <div style={{ whiteSpace: 'pre-wrap', marginTop: 6, fontSize: 14, lineHeight: 1.65 }}>{c}</div>
+}
+
+function LessonBlocks({ lesson, teacher, onChanged }) {
+  const { toast, confirmBox, errMsg } = useUI()
+  const [rows, setRows] = useState(Array.isArray(lesson.blocks) ? lesson.blocks : [])
+  const [busy, setBusy] = useState(false)
+  const [showAdd, setShowAdd] = useState(false)
+  const [form, setForm] = useState({ type: 'text', content: '', position: '' })
+  const [editingId, setEditingId] = useState(null)
+  const [editForm, setEditForm] = useState({ type: 'text', content: '', position: '' })
+
+  const reloadRows = async () => {
+    try {
+      const r = await api.lessonBlocks(lesson.id)
+      setRows(Array.isArray(r) ? r : [])
+    } catch {}
+  }
+
+  useEffect(() => {
+    let alive = true
+    if (Array.isArray(lesson.blocks) && lesson.blocks.length) {
+      setRows(lesson.blocks)
+      return () => { alive = false }
+    }
+    api.lessonBlocks(lesson.id).then((r) => { if (alive) setRows(Array.isArray(r) ? r : []) }).catch(() => {})
+    return () => { alive = false }
+    // eslint-disable-next-line
+  }, [lesson.id, lesson.blocks])
+
+  const ordered = [...rows].sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || ((a.id ?? 0) - (b.id ?? 0)))
+
+  const add = async () => {
+    if (busy) return
+    if (!form.content.trim()) { toast('Nhập nội dung block.', 'warn'); return }
+    setBusy(true)
+    try {
+      await api.createBlock(lesson.id, {
+        type: form.type || 'text',
+        content: form.content,
+        position: form.position === '' ? undefined : Number(form.position),
+      })
+      setForm({ type: 'text', content: '', position: '' })
+      setShowAdd(false)
+      await reloadRows()
+      await onChanged?.()
+      toast('Đã thêm block.')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBusy(false)
+  }
+
+  const startEdit = (b) => {
+    setEditingId(b.id)
+    setEditForm({ type: b.type || 'text', content: b.content || '', position: b.position ?? '' })
+  }
+
+  const saveEdit = async () => {
+    if (busy || editingId == null) return
+    if (!editForm.content.trim()) { toast('Nhập nội dung block.', 'warn'); return }
+    setBusy(true)
+    try {
+      await api.updateBlock(editingId, {
+        type: editForm.type || 'text',
+        content: editForm.content,
+        position: editForm.position === '' ? undefined : Number(editForm.position),
+      })
+      setEditingId(null)
+      await reloadRows()
+      await onChanged?.()
+      toast('Đã lưu block.')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBusy(false)
+  }
+
+  const remove = async (b) => {
+    const ok = await confirmBox('Xóa block này? Không hoàn tác.', { danger: true, okLabel: 'Xóa' })
+    if (!ok) return
+    setBusy(true)
+    try {
+      await api.deleteBlock(b.id)
+      await reloadRows()
+      await onChanged?.()
+      toast('Đã xóa block.')
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBusy(false)
+  }
+
+  const move = async (b, dir) => {
+    if (busy) return
+    const i = ordered.findIndex((x) => x.id === b.id)
+    const j = dir === 'up' ? i - 1 : i + 1
+    if (i < 0 || j < 0 || j >= ordered.length) return
+    setBusy(true)
+    try {
+      const a = ordered[i]
+      const c = ordered[j]
+      const pa = a.position ?? (i + 1)
+      const pc = c.position ?? (j + 1)
+      await api.updateBlock(a.id, { position: pc })
+      await api.updateBlock(c.id, { position: pa })
+      await reloadRows()
+      await onChanged?.()
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBusy(false)
+  }
+
+  return (
+    <div style={{ marginTop: 10, borderTop: '1px dashed var(--line)', paddingTop: 10 }}>
+      <div className="row spread">
+        <span className="small muted">Nội dung chi tiết{ordered.length ? ` (${ordered.length})` : ''}</span>
+        {teacher && (
+          <button className="btn sm" onClick={() => setShowAdd((v) => !v)}><IconPlus className="icn sm" />Thêm block</button>
+        )}
+      </div>
+      {teacher && showAdd && (
+        <div className="panel" style={{ marginTop: 8 }}>
+          <div className="grid c2">
+            <div>
+              <label className="lbl" style={{ marginTop: 0 }}>Loại block</label>
+              <select className="select" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                {BLOCK_TYPES.map((t) => <option key={t} value={t}>{BLOCK_TYPE_LABELS[t]}</option>)}
+              </select>
+              <label className="lbl">Vị trí (để trống = cuối)</label>
+              <input className="input" type="number" min="1" value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} />
+            </div>
+            <div>
+              <label className="lbl" style={{ marginTop: 0 }}>Nội dung *</label>
+              <textarea className="textarea" style={{ minHeight: 90 }} value={form.content}
+                placeholder="Văn bản / link ảnh / link tệp…"
+                onChange={(e) => setForm({ ...form, content: e.target.value })} />
+            </div>
+          </div>
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn primary sm" onClick={add} disabled={busy}>Lưu block</button>
+            <button className="btn sm" onClick={() => setShowAdd(false)}>Hủy</button>
+          </div>
+        </div>
+      )}
+      {ordered.length === 0 && <div className="small muted" style={{ marginTop: 6 }}>Chưa có nội dung chi tiết.</div>}
+      {ordered.map((b, i) => (
+        <div key={b.id} className="panel" style={{ marginTop: 8 }}>
+          <div className="row spread">
+            <span className="badge">{BLOCK_TYPE_LABELS[b.type] || b.type}{b.position != null ? ` · #${b.position}` : ''}</span>
+            {teacher && (
+              <div className="row">
+                <button className="btn sm" aria-label="Lên" onClick={() => move(b, 'up')} disabled={busy || i === 0}>↑</button>
+                <button className="btn sm" aria-label="Xuống" onClick={() => move(b, 'down')} disabled={busy || i === ordered.length - 1}>↓</button>
+                <button className="btn sm" onClick={() => startEdit(b)}><IconPencil className="icn sm" /></button>
+                <button className="btn danger sm" onClick={() => remove(b)}><IconX className="icn sm" /></button>
+              </div>
+            )}
+          </div>
+          {teacher && editingId === b.id ? (
+            <div style={{ marginTop: 8 }}>
+              <div className="grid c2">
+                <div>
+                  <label className="lbl" style={{ marginTop: 0 }}>Loại block</label>
+                  <select className="select" value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}>
+                    {BLOCK_TYPES.map((t) => <option key={t} value={t}>{BLOCK_TYPE_LABELS[t]}</option>)}
+                  </select>
+                  <label className="lbl">Vị trí</label>
+                  <input className="input" type="number" min="1" value={editForm.position} onChange={(e) => setEditForm({ ...editForm, position: e.target.value })} />
+                </div>
+                <div>
+                  <label className="lbl" style={{ marginTop: 0 }}>Nội dung *</label>
+                  <textarea className="textarea" style={{ minHeight: 90 }} value={editForm.content} onChange={(e) => setEditForm({ ...editForm, content: e.target.value })} />
+                </div>
+              </div>
+              <div className="row" style={{ marginTop: 8 }}>
+                <button className="btn primary sm" onClick={saveEdit} disabled={busy}>Lưu</button>
+                <button className="btn sm" onClick={() => setEditingId(null)}>Hủy</button>
+              </div>
+            </div>
+          ) : (
+            <BlockContent b={b} />
+          )}
+        </div>
+      ))}
     </div>
   )
 }

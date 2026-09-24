@@ -1,31 +1,14 @@
 import { Navigate, NavLink, useLocation } from 'react-router-dom'
-import { IconBook, IconFileUp, IconShield, IconUsers, IconWand } from '../components/icons.jsx'
-import { getSession } from '../api.js'
-import { isAdminRole, isStaffRole } from '../lib/roles.js'
-import Bank from './Bank.jsx'
-import ImportDoc from './ImportDoc.jsx'
-import Permissions from './Permissions.jsx'
-import School from './School.jsx'
-import Studio from './Studio.jsx'
-import Team from './Team.jsx'
-
-const SUBS = ['studio', 'team', 'bank', 'import', 'school', 'permissions']
+import { useSession } from '../app/session-context.jsx'
+import { fallbackPath, getManageRouteDescriptors } from '../app/routeRegistry.jsx'
 
 export default function Manage() {
-  const s = getSession()
-  const role = s.student?.role || 'student'
-  const isStaff = isStaffRole(role)
-  const isAdmin = isAdminRole(role)
-  const isSuper = role === 'super_admin'
+  const { token, isStaff, isAdmin, isSuper } = useSession()
   const loc = useLocation()
   const seg = (loc.pathname.split('/')[2] || '')
-  const allowed = SUBS.filter((x) => {
-    if (x === 'school') return isAdmin
-    if (x === 'permissions') return isSuper
-    return true
-  })
+  const allowed = getManageRouteDescriptors({ isStaff, isAdmin, isSuper })
 
-  if (!s.token || !isStaff) {
+  if (!token || !isStaff) {
     return (
       <div className="grid">
         <div className="card">
@@ -35,19 +18,14 @@ export default function Manage() {
       </div>
     )
   }
-  if (!seg || !allowed.includes(seg)) {
-    return <Navigate to={allowed.includes('team') ? '/manage/team' : '/manage/studio'} replace />
-  }
-  const sub = seg
 
-  const tabs = [
-    { id: 'studio', to: '/manage/studio', label: 'Studio', Icon: IconWand },
-    { id: 'team', to: '/manage/team', label: 'Học sinh', Icon: IconUsers },
-    { id: 'bank', to: '/manage/bank', label: 'Ngân hàng', Icon: IconBook },
-    { id: 'import', to: '/manage/import', label: 'Nhập đề', Icon: IconFileUp },
-    ...(isAdmin ? [{ id: 'school', to: '/manage/school', label: 'Nhà trường', Icon: IconShield }] : []),
-    ...(isSuper ? [{ id: 'permissions', to: '/manage/permissions', label: 'Phân quyền', Icon: IconShield }] : []),
-  ]
+  const descriptor = allowed.find((entry) => entry.id === seg)
+  if (!descriptor) {
+    const fallback = allowed.find((entry) => entry.fallback) || allowed[0]
+    return <Navigate to={fallback?.path || fallbackPath} replace />
+  }
+
+  const Content = descriptor.component
 
   return (
     <div className="grid">
@@ -57,19 +35,14 @@ export default function Manage() {
           Tạo nội dung nhanh (pipeline 4 bước) rồi mới đến ngân hàng, học sinh, nhà trường.
         </div>
         <div className="subnav" style={{ marginTop: 12 }} role="tablist" aria-label="Khu vực quản lý">
-          {tabs.map(({ id, to, label, Icon }) => (
-            <NavLink key={id} role="tab" aria-selected={sub === id} className={sub === id ? 'on' : ''} to={to}>
+          {allowed.map(({ id, path, label, icon: Icon }) => (
+            <NavLink key={id} role="tab" aria-selected={descriptor.id === id} className={descriptor.id === id ? 'on' : ''} to={path}>
               <Icon className="icn sm" />{label}
             </NavLink>
           ))}
         </div>
       </div>
-      {sub === 'studio' && <Studio />}
-      {sub === 'bank' && <Bank />}
-      {sub === 'import' && <ImportDoc />}
-      {sub === 'team' && <Team />}
-      {sub === 'school' && isAdmin && <School />}
-      {sub === 'permissions' && isSuper && <Permissions />}
+      <Content />
     </div>
   )
 }

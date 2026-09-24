@@ -21,12 +21,16 @@ class TopicUpdateIn(BaseModel):
     name: str = ""
     description: str = ""
     grade: Optional[int] = None
+    parent_id: Optional[str] = None
+    position: Optional[int] = None
+    status: Optional[str] = None
 class LessonUpdateIn(BaseModel):
     title: str = ""
     content: Optional[str] = None
     idx: Optional[int] = None
     required: Optional[int] = None
     advanced: Optional[int] = None
+    status: Optional[str] = None
 class MaterialIn(BaseModel):
     subject_id: str = ""
     topic_id: Optional[str] = None
@@ -66,7 +70,7 @@ class SchoolYearIn(BaseModel):
     start_date: str = ""
     end_date: str = ""
     is_current: int = 0
-class GradeIn(BaseModel):
+class GradeYearIn(BaseModel):
     school_year_id: Optional[int] = None
     name: str
     code: str = ""
@@ -87,6 +91,9 @@ class TopicIn(BaseModel):
     name: str
     grade: int = 12
     description: str = ""
+    parent_id: Optional[str] = None
+    position: Optional[int] = None
+    status: str = "published"
 class BulkIn(BaseModel):
     items: list
 class ExamIn(BaseModel):
@@ -154,5 +161,11 @@ class LessonCreateIn(BaseModel):
     idx: int = 1
     required: int = 1
     advanced: int = 0
+    status: str = "published"
 class CompleteIn(BaseModel):
     undo: bool = False
+class BlockIn(BaseModel):
+    type: Optional[str] = None
+    content: Optional[str] = None
+    position: Optional[int] = None
+    metadata: Optional[dict] = None

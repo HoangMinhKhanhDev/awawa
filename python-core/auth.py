@@ -138,26 +138,57 @@ def role_of(me) -> str:
 
 
 def has_perm(me, perm_key: str) -> bool:
-    """Doc permission matrix theo role — super_admin luon True."""
+    return perm_allows(me, perm_key, {})
+
+
+_SCOPE_RANK = {"own": 0, "team": 1, "school": 2, "system": 3}
+
+
+def default_scope_for_role(role: str) -> str:
+    if role == "super_admin":
+        return "system"
+    if role == "admin":
+        return "school"
+    if role == "teacher":
+        return "team"
+    return "own"
+
+
+def perm_allows(me, perm_key: str, ctx: dict = None) -> bool:
+    """RBAC + scope: own < team < school < system. ctx: {"scope":..., "team_id":...}."""
+    if ctx is None:
+        ctx = {}
     if not me:
         return False
     r = role_of(me)
     if r == "super_admin":
         return True
     row = get_db().q1(
-        "SELECT allowed FROM role_permissions WHERE role=? AND perm_key=?",
+        "SELECT allowed, scope FROM role_permissions WHERE role=? AND perm_key=?",
         (r, perm_key))
     if row is None:
         # Chua seed role nay → fallback theo role mac dinh an toan
         return r in ("admin", "teacher") and perm_key.endswith((".view", ".read", ".self", ".manage"))
-    return bool(row["allowed"])
+    if not row["allowed"]:
+        return False
+    try:
+        scope_val = row["scope"] or ""
+    except (IndexError, KeyError):
+        scope_val = ""
+    have = scope_val.strip() or default_scope_for_role(r)
+    need = ctx.get("scope", "own")
+    if _SCOPE_RANK.get(have, 0) < _SCOPE_RANK.get(need, 0):
+        return False
+    if need == "team" and r == "teacher" and "team_id" in ctx:
+        return int(ctx["team_id"]) in teacher_coached_team_ids(me["id"])
+    return True
 
 
-def require_perm(request: Request, perm_key: str) -> dict:
+def require_perm(request: Request, perm_key: str, ctx: dict = None) -> dict:
     me = optional_session(request)
     if not me:
         raise HTTPException(401, "Chua dang nhap.")
-    if not has_perm(me, perm_key):
+    if not perm_allows(me, perm_key, ctx or {}):
         raise HTTPException(403, f"Ban khong co quyen: {perm_key}")
     return me
 
@@ -167,3 +198,29 @@ def teacher_coached_team_ids(user_id: int) -> list:
         "SELECT team_id FROM team_members WHERE user_id=? AND member_role='coach' AND (left_at IS NULL OR left_at='')",
         (user_id,))
     return [r["team_id"] for r in rows]
+
+
+def student_team_ids(sid: int) -> list:
+    rows = get_db().q(
+        "SELECT team_id FROM team_members WHERE user_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')",
+        (sid,))
+    return [r["team_id"] for r in rows]
+
+
+def require_same_team_or_admin(me, sid: int):
+    from fastapi import HTTPException
+    if is_admin(me):
+        return me
+    mine = teacher_coached_team_ids(me["id"])
+    if not set(mine) & set(student_team_ids(sid)):
+        raise HTTPException(403, "Hoc sinh khong thuoc doi ban phu trach.")
+    return me
+
+
+def require_team_coach_or_admin(me, team_id: int):
+    from fastapi import HTTPException
+    if is_admin(me):
+        return me
+    if int(team_id) not in teacher_coached_team_ids(me["id"]):
+        raise HTTPException(403, "Ban khong phu trach doi nay.")
+    return me

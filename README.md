@@ -1,4 +1,4 @@
-# Ôn luyện HSG THPT (PWA + Python server)
+# Ôn luyện HSG THPT (PWA + PHP/MySQL)
 
 Hướng hiện tại (đã chốt): **một app web duy nhất (PWA) cho cả giáo viên và học sinh**,
 mở bằng link/QR trên điện thoại. Bản Electron desktop tạm dừng, chưa xóa.
@@ -90,9 +90,19 @@ kèm bài nộp (`focus_exits` + `focus_log` chi tiết thời gian). Giáo viê
 ## Build bản production
 
 ```powershell
-npm run build:renderer   # ra dist/ + manifest + service worker
+npm run build:renderer   # Hostinger: web + runtime PHP
+npm run build:web        # Vercel: web-only, không copy API
 npx vite preview --host  # chạy thử bản build trên LAN
 ```
 
-Triển khai thật cần **HTTPS** (PWA yêu cầu) — dùng Caddy/Nginx + Let's Encrypt,
-trỏ tên miền về máy chủ rồi in QR.
+## PHP/MySQL cutover
+
+PHP/MySQL là backend chuẩn; Python/FastAPI chỉ còn là legacy/local. Không chạy migration trực tiếp trên production nếu chưa có backup và bản staging.
+
+1. Copy `api/schema_mysql.sql` vào database mới hoặc database hiện tại bằng phpMyAdmin.
+2. Set `AWAWA_MIGRATIONS_REQUIRED=1`, `AWAWA_STRICT_TENANT=1`, thông tin `DB_*`, `ALLOWED_ORIGINS` trong hPanel; nếu database legacy chưa có trường, set `AWAWA_MIGRATION_DEFAULT_SCHOOL_SLUG`, `AWAWA_MIGRATION_DEFAULT_SCHOOL_NAME` và `AWAWA_MIGRATION_ASSIGN_SINGLE_SCHOOL=1`.
+3. Chạy `php database/bin/migrate.php status`, rồi `php database/bin/migrate.php migrate`.
+4. Đọc `migration_quarantine`, xử lý dữ liệu legacy bị thiếu tenant trước khi bật `AWAWA_MIGRATIONS_REQUIRED=1`.
+5. Deploy artifact từ `npm run build:renderer`; đường dẫn web dùng `/schools/{schoolSlug}/teams/{teamSlug}`, link hash cũ được chuyển tự động.
+
+Không expose `database/`, `api/lib/`, `api/storage/` hoặc file SQL. Khi `AWAWA_STRICT_TENANT=1`, API v1 chưa được migrate sẽ trả `410`; không đặt `AWAWA_STRICT_TENANT=0` ngoài môi trường legacy. Đặt `API_TOKEN` chỉ cho server-to-server; trình duyệt dùng session token.

@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from auth import optional_session, require_teacher
+from auth import optional_session, require_perm, require_teacher
 from deps import get_db
 
 router = APIRouter()
@@ -208,7 +208,7 @@ def sse(event: str, data) -> str:
 
 @router.post("/api/ai/generate-stream")
 def ai_generate_stream(payload: AiGenIn, request: Request):
-    require_teacher(request)
+    require_perm(request, "studio.manage")
     t = (payload.type or "").strip()
     if t not in ("questions", "lesson", "exam", "flashcards", "cloze"):
         raise HTTPException(400, "type khong hop le.")
@@ -243,7 +243,7 @@ def ai_generate_stream(payload: AiGenIn, request: Request):
 
 @router.post("/api/ai/generate")
 def ai_generate(payload: AiGenIn, request: Request):
-    require_teacher(request)
+    require_perm(request, "studio.manage")
     t = (payload.type or "").strip()
     if t not in ("questions", "lesson", "exam", "flashcards", "cloze"):
         raise HTTPException(400, "type khong hop le.")
@@ -278,7 +278,7 @@ def list_flashcards(request: Request, topic_id: str = ""):
 
 @router.post("/api/flashcards")
 def create_flashcards(payload: CardIn, request: Request):
-    require_teacher(request)
+    require_perm(request, "bank.manage")
     db = get_db()
     topic_id = (payload.topic_id or "").strip()
     if not topic_id or not db.q1("SELECT 1 FROM topics WHERE id=?", (topic_id,)):
@@ -303,7 +303,7 @@ def create_flashcards(payload: CardIn, request: Request):
 
 @router.put("/api/flashcards/{fid}")
 def update_flashcard(fid: int, payload: CardPut, request: Request):
-    require_teacher(request)
+    require_perm(request, "bank.manage")
     db = get_db()
     if not db.q1("SELECT 1 FROM flashcards WHERE id=?", (fid,)):
         raise HTTPException(404, "Khong tim thay the.")
@@ -314,7 +314,7 @@ def update_flashcard(fid: int, payload: CardPut, request: Request):
 
 @router.delete("/api/flashcards/{fid}")
 def delete_flashcard(fid: int, request: Request):
-    require_teacher(request)
+    require_perm(request, "bank.manage")
     get_db().exec("DELETE FROM flashcards WHERE id=?", (fid,))
     return {"ok": True}
 

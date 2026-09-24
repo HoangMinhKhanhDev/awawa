@@ -10,7 +10,6 @@ import { parseTextToDrafts } from './lib/parseImport.js'
 //   VITE_API_BASE=https://herbspalab.com/api
 // Ưu tiên PHP (Hostinger), cuối cùng là Python LAN cũ.
 const PHP_BASE = (import.meta.env.VITE_API_BASE || '').trim().replace(/\/+$/, '')
-const PHP_TOKEN = import.meta.env.VITE_API_TOKEN || ''
 export const isPhpMode = Boolean(PHP_BASE)
 
 // ================= LEGACY (Python core) =================
@@ -69,19 +68,34 @@ export function getSession() {
 
 export function setSession(token, student) {
   if (token) localStorage.setItem('sessionToken', token)
-  else localStorage.removeItem('sessionToken')
+  else {
+    localStorage.removeItem('sessionToken')
+    if (typeof window !== 'undefined' && 'caches' in window) {
+      window.caches.keys().then((keys) => Promise.all(
+        keys.filter((key) => key === 'lessons-cache' || key === 'progress-cache').map((key) => window.caches.delete(key)),
+      )).catch(() => {})
+    }
+  }
   if (student) {
     localStorage.setItem('student', JSON.stringify(student))
     if (student.name) localStorage.setItem('studentName', student.name)
   } else {
     localStorage.removeItem('student')
+    localStorage.removeItem('studentName')
   }
   try { window.dispatchEvent(new Event('session-changed')) } catch {}
 }
 
+function expireSessionOn401(status) {
+  if (status === 401 && localStorage.getItem('sessionToken')) setSession('', null)
+}
+
 function sessionHeaders() {
   const t = localStorage.getItem('sessionToken')
-  return t ? { 'X-Session-Token': t } : {}
+  const schoolId = localStorage.getItem('hsg-school-id')
+  const headers = t ? { 'X-Session-Token': t } : {}
+  if (schoolId) headers['X-School-ID'] = schoolId
+  return headers
 }
 
 // call(path, options) — legacy truyền (p, o) => req('/api' + p, o), php truyền preq
@@ -192,14 +206,20 @@ const mvpMethods = (call, qs) => ({
   updateFlashcard: (id, payload) => call(`/flashcards/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteFlashcard: (id) => call(`/flashcards/${id}`, { method: 'DELETE' }),
   reviewFlashcard: (id, quality) => call(`/flashcards/${id}/review`, { method: 'POST', body: JSON.stringify({ quality }) }),
+  // M5: topics tree + lesson status + blocks
+  topicsTree: (subjectId) => call('/topics' + qs({ subject_id: subjectId || undefined, tree: 1 })),
+  lessonBlocks: (lid) => call(`/lessons/${lid}/blocks`),
+  createBlock: (lid, payload) => call(`/lessons/${lid}/blocks`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateBlock: (id, payload) => call(`/blocks/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteBlock: (id) => call(`/blocks/${id}`, { method: 'DELETE' }),
 })
 
 // Streaming SSE AI — url: day du endpoint (legacy va php khac nhau prefix)
 async function aiStream(url, payload, onEvent, signal) {
   const headers = { 'Content-Type': 'application/json', ...sessionHeaders() }
-  if (PHP_TOKEN) headers['X-Api-Token'] = PHP_TOKEN
   const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal })
   if (!res.ok) {
+    expireSessionOn401(res.status)
     const t = await res.text().catch(() => '')
     throw new Error(`API ${res.status}: ${t.slice(0, 300)}`)
   }
@@ -238,6 +258,7 @@ async function req(path, options = {}) {
     signal: options.signal || AbortSignal.timeout?.(30000),
   })
   if (!res.ok) {
+    expireSessionOn401(res.status)
     const t = await res.text().catch(() => '')
     throw new Error(`API ${res.status}: ${t.slice(0, 300)}`)
   }
@@ -418,13 +439,13 @@ async function preq(path, options = {}) {
   const headers = { ...(options.headers || {}), ...sessionHeaders() }
   const isForm = typeof FormData !== 'undefined' && options.body instanceof FormData
   if (!isForm) headers['Content-Type'] = 'application/json'
-  if (PHP_TOKEN) headers['X-Api-Token'] = PHP_TOKEN
   const res = await fetch(`${PHP_BASE}${path}`, {
     ...options,
     headers,
     signal: options.signal || AbortSignal.timeout?.(30000),
   })
   if (!res.ok) {
+    expireSessionOn401(res.status)
     const t = await res.text().catch(() => '')
     let msg = t.slice(0, 300)
     try {
@@ -449,6 +470,48 @@ function pquery(params = {}) {
 
 const phpApi = {
   health: () => preq('/health'),
+  contexts: () => preq('/v2/me/contexts'),
+  createSchool: (payload) => preq('/v2/schools', { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchool: (schoolId, payload) => preq(`/v2/schools/${schoolId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  breakGlassGrants: () => preq('/v2/break-glass'),
+  createBreakGlassGrant: (payload) => preq('/v2/break-glass', { method: 'POST', body: JSON.stringify(payload) }),
+  revokeBreakGlassGrant: (grantId) => preq(`/v2/break-glass/${grantId}`, { method: 'DELETE' }),
+  systemRoles: () => preq('/v2/system-roles'),
+  grantSystemRole: (userId) => preq('/v2/system-roles', { method: 'POST', body: JSON.stringify({ user_id: userId }) }),
+  revokeSystemRole: (userId) => preq(`/v2/system-roles/${userId}`, { method: 'DELETE' }),
+  schoolSubjects: (schoolId) => preq(`/v2/schools/${schoolId}/subjects`),
+  createSchoolSubject: (schoolId, payload) => preq(`/v2/schools/${schoolId}/subjects`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchoolSubject: (schoolId, subjectId, payload) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  archiveSchoolSubject: (schoolId, subjectId) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}`, { method: 'DELETE' }),
+  v2SchoolYears: (schoolId) => preq(`/v2/schools/${schoolId}/years`),
+  createV2SchoolYear: (schoolId, payload) => preq(`/v2/schools/${schoolId}/years`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateV2SchoolYear: (schoolId, yearId, payload) => preq(`/v2/schools/${schoolId}/years/${yearId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  schoolGrades: (schoolId) => preq(`/v2/schools/${schoolId}/grades`),
+  createSchoolGrade: (schoolId, payload) => preq(`/v2/schools/${schoolId}/grades`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchoolGrade: (schoolId, gradeId, payload) => preq(`/v2/schools/${schoolId}/grades/${gradeId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  schoolClasses: (schoolId) => preq(`/v2/schools/${schoolId}/classes`),
+  createSchoolClass: (schoolId, payload) => preq(`/v2/schools/${schoolId}/classes`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchoolClass: (schoolId, classId, payload) => preq(`/v2/schools/${schoolId}/classes/${classId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  archiveSchoolClass: (schoolId, classId) => preq(`/v2/schools/${schoolId}/classes/${classId}`, { method: 'DELETE' }),
+  schoolClassMembers: (schoolId, classId) => preq(`/v2/schools/${schoolId}/classes/${classId}/members`),
+  addSchoolClassMember: (schoolId, classId, userId) => preq(`/v2/schools/${schoolId}/classes/${classId}/members`, { method: 'POST', body: JSON.stringify({ user_id: userId }) }),
+  removeSchoolClassMember: (schoolId, classId, userId) => preq(`/v2/schools/${schoolId}/classes/${classId}/members/${userId}`, { method: 'DELETE' }),
+  schoolUsers: (schoolId) => preq(`/v2/schools/${schoolId}/users`),
+  createSchoolUser: (schoolId, payload) => preq(`/v2/schools/${schoolId}/users`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchoolUser: (schoolId, userId, payload) => preq(`/v2/schools/${schoolId}/users/${userId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  removeSchoolUser: (schoolId, userId) => preq(`/v2/schools/${schoolId}/users/${userId}`, { method: 'DELETE' }),
+  createSchoolTeam: (schoolId, subjectId, payload) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchoolTeam: (schoolId, subjectId, teamId, payload) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams/${teamId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  archiveSchoolTeam: (schoolId, subjectId, teamId) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams/${teamId}`, { method: 'DELETE' }),
+  schoolTeamMembers: (schoolId, subjectId, teamId) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams/${teamId}/members`),
+  linkClassToTeam: (schoolId, subjectId, teamId, classId) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams/${teamId}/classes/${classId}`, { method: 'POST', body: '{}' }),
+  unlinkClassFromTeam: (schoolId, subjectId, teamId, classId) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams/${teamId}/classes/${classId}`, { method: 'DELETE' }),
+  updateTeamMember: (schoolId, subjectId, teamId, userId, payload) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams/${teamId}/members/${userId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  schoolTeams: (schoolId, subjectId) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams`),
+  allSchoolTeams: (schoolId) => preq(`/v2/schools/${schoolId}/teams`),
+  team: (schoolId, subjectId, teamId) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams/${teamId}`),
+  teamModules: (schoolId, subjectId, teamId) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams/${teamId}/modules`),
+  updateTeamModule: (schoolId, subjectId, teamId, moduleCode, payload) => preq(`/v2/schools/${schoolId}/subjects/${encodeURIComponent(subjectId)}/teams/${teamId}/modules/${encodeURIComponent(moduleCode)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   subjects: () => preq('/subjects'),
   topics: (subjectId) => preq(`/topics${subjectId ? `?subject_id=${subjectId}` : ''}`),
   createTopic: (payload) => preq('/topics', { method: 'POST', body: JSON.stringify(payload) }),
@@ -504,9 +567,12 @@ const phpApi = {
     return r.url
   },
   // Upload file tự luận / học liệu (GV + HS) — mở rộng accept so với upload ảnh
-  uploadAnyFile: async (file) => {
+  uploadAnyFile: async (file, teamId = 0, ownerType = 'upload', ownerId = '') => {
     const fd = new FormData()
     fd.append('file', file)
+    if (teamId) fd.append('team_id', String(teamId))
+    if (ownerType) fd.append('owner_type', ownerType)
+    if (ownerId) fd.append('owner_id', String(ownerId))
     const r = await preq('/uploads', { method: 'POST', body: fd })
     if (!r || !r.url) throw new Error('Server không trả về link file.')
     return r.url

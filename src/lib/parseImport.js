@@ -2,10 +2,9 @@
 // để mục "Nhập đề" chạy hoàn toàn trên trình duyệt (không cần server).
 // Giữ nguyên quy ước: Câu 1: … / A. … / Đáp án: A / Lời giải: …
 
-const OPT = /^\s*([A-Da-d])[.)\:\-–]\s*(.+)$/
+const OPT = /^\s*([A-Da-d])[-.):–]\s*(.+)$/
 const ANSWER_RE = /(?:đáp\s*án|dap\s*an|answer|key)\s*[:\-–]?\s*([A-Da-d])/i
-const SPLIT_SRC = '(?:^|\\n)\\s*(Câu\\s+\\d+\\s*[.:–\\-)]?)'
-const SPLIT = new RegExp(SPLIT_SRC, 'i')
+const SPLIT_SRC = '(?:^|\\n)\\s*(Câu\\s+\\d+\\s*[.:–-]?)'
 const HEAD_STRIP = /^(Câu\s+\d+\s*[.:–\-)]?)\s*/i
 const EXPL_RE = /(lời\s*giải|hướng\s*dẫn|giải\s*thích|solution)\s*[:\-–]?/i
 

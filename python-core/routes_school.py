@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request
 
 from auth import is_admin, require_admin, require_teacher, optional_session
 from deps import get_db
-from models import (ActiveIn, GradeIn, SchoolYearIn, TeamIn, TeamMemberIn)
+from models import (ActiveIn, GradeYearIn, SchoolYearIn, TeamIn, TeamMemberIn)
 
 router = APIRouter()
 
@@ -84,7 +84,7 @@ def list_grades(school_year_id: int = None):
 
 
 @router.post("/api/grades")
-def create_grade(payload: GradeIn, request: Request):
+def create_grade(payload: GradeYearIn, request: Request):
     require_admin(request)
     from fastapi import HTTPException
     name = (payload.name or "").strip()[:80]
@@ -98,7 +98,7 @@ def create_grade(payload: GradeIn, request: Request):
 
 
 @router.put("/api/grades/{gid}")
-def update_grade(gid: int, payload: GradeIn, request: Request):
+def update_grade(gid: int, payload: GradeYearIn, request: Request):
     require_admin(request)
     get_db().exec("UPDATE grades SET name=?, code=? WHERE id=?",
                   ((payload.name or "").strip()[:80], (payload.code or "").strip()[:20], gid))

@@ -3,3 +3,7 @@ RewriteEngine On
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^(.*)$ index.php?p=$1 [QSA,L]
+RewriteRule \.(sql|md|log|ini|bak|dist)$ - [F,L,NC]
+RewriteRule (^|/)\. - [F,L]
+RewriteRule ^lib(?:/|$) - [F,L]
+RewriteRule ^storage(?:/|$) - [F,L]

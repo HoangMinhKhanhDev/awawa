@@ -6,7 +6,8 @@ from seed import ensure_cn_seed, seed
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS subjects (id TEXT PRIMARY KEY, name TEXT NOT NULL, code TEXT);
-CREATE TABLE IF NOT EXISTS topics (id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, name TEXT NOT NULL, grade INTEGER DEFAULT 12);
+CREATE TABLE IF NOT EXISTS topics (id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, name TEXT NOT NULL, grade INTEGER DEFAULT 12,
+  description TEXT DEFAULT '', parent_id TEXT, position INTEGER DEFAULT 0, status TEXT DEFAULT 'published');
 CREATE TABLE IF NOT EXISTS questions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   subject_id TEXT NOT NULL,
@@ -123,7 +124,17 @@ CREATE TABLE IF NOT EXISTS lessons (
   topic_id TEXT NOT NULL,
   title TEXT NOT NULL,
   content TEXT DEFAULT '',
-  idx INTEGER NOT NULL DEFAULT 1
+  idx INTEGER NOT NULL DEFAULT 1,
+  status TEXT DEFAULT 'published',
+  published_at TEXT
+);
+CREATE TABLE IF NOT EXISTS lesson_blocks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lesson_id INTEGER NOT NULL,
+  type TEXT NOT NULL DEFAULT 'text',
+  content TEXT DEFAULT '',
+  position INTEGER NOT NULL DEFAULT 1,
+  metadata TEXT
 );
 CREATE TABLE IF NOT EXISTS lesson_completions (
   student_id INTEGER NOT NULL,
@@ -167,6 +178,8 @@ QUESTION_MIGRATIONS = [
 LESSON_MIGRATIONS = [
     ("required", "INTEGER DEFAULT 1"),
     ("advanced", "INTEGER DEFAULT 0"),
+    ("status", "TEXT DEFAULT 'published'"),
+    ("published_at", "TEXT"),
 ]
 
 EXAM_MIGRATIONS = [
@@ -187,6 +200,9 @@ STUDENT_MIGRATIONS = [
 
 TOPIC_MIGRATIONS = [
     ("description", "TEXT DEFAULT ''"),
+    ("parent_id", "TEXT"),
+    ("position", "INTEGER DEFAULT 0"),
+    ("status", "TEXT DEFAULT 'published'"),
 ]
 
 ASSIGN_Q_MIGRATIONS = [
@@ -279,7 +295,11 @@ class DB:
           role TEXT NOT NULL,
           perm_key TEXT NOT NULL,
           allowed INTEGER DEFAULT 0,
+          scope TEXT DEFAULT '',
           UNIQUE (role, perm_key))""")
+        rpcols = {r[1] for r in self.conn.execute("PRAGMA table_info(role_permissions)").fetchall()}
+        if "scope" not in rpcols:
+            self.conn.execute("ALTER TABLE role_permissions ADD COLUMN scope TEXT DEFAULT ''")
         self.seed_role_permissions()
         self.conn.commit()
         self.conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
@@ -403,10 +423,16 @@ class DB:
         },
     }
 
+    _SCOPE = {"student": "own", "teacher": "team", "admin": "school", "super_admin": "system"}
+
     def seed_role_permissions(self):
         for role, perms in self.DEFAULT_PERMS.items():
             for key, allowed in perms.items():
                 self.conn.execute(
-                    """INSERT OR IGNORE INTO role_permissions (role, perm_key, allowed)
-                       VALUES (?,?,?)""", (role, key, allowed))
+                    """INSERT OR IGNORE INTO role_permissions (role, perm_key, allowed, scope)
+                       VALUES (?,?,?,?)""", (role, key, allowed, self._SCOPE.get(role, "own")))
+        for role, scope in self._SCOPE.items():
+            self.conn.execute(
+                "UPDATE role_permissions SET scope=? WHERE role=? AND (scope IS NULL OR scope='')",
+                (scope, role))
         self.conn.commit()

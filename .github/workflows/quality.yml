@@ -1,0 +1,54 @@
+name: quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build:web
+      - run: npm audit --omit=dev
+
+  php:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: awawa_test
+          MYSQL_ROOT_PASSWORD: test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -ptest-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_mysql
+      - run: find api database tests/php -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: php tests/php/migration_contract.php
+      - run: php tests/php/migration_db.php
+        env:
+          DB_HOST: 127.0.0.1
+          DB_NAME: awawa_test
+          DB_USER: root
+          DB_PASS: test-password
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+      - run: php tests/php/migration_contract.php

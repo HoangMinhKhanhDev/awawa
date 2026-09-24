@@ -228,7 +228,7 @@ function AssignmentDetail() {
     setUploading(true)
     try {
       if (!api.uploadAnyFile) { toast('Chế độ LAN chưa hỗ trợ upload file — gửi link trong câu trả lời.', 'warn'); setUploading(false); e.target.value = ''; return }
-      const url = await api.uploadAnyFile(file)
+      const url = await api.uploadAnyFile(file, a.team_id, 'assignment', a.id)
       setFiles((f) => [...f, url].slice(0, 10))
       scheduleAuto()
       toast('Đã đính kèm file.')

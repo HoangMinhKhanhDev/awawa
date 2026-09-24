@@ -1,7 +1,7 @@
 from deps import get_db
 
 
-def row_to_q(r):
+def row_to_q(r, include_answer=False):
     subj = get_db().q1("SELECT name FROM subjects WHERE id=?", (r["subject_id"],))
     topic = get_db().q1("SELECT name FROM topics WHERE id=?", (r["topic_id"],)) if r["topic_id"] else None
     try:
@@ -23,14 +23,17 @@ def row_to_q(r):
             tags = []
     except Exception:
         tags = []
-    return {
+    out = {
         "id": r["id"], "subject_id": r["subject_id"],
         "subject_name": subj["name"] if subj else r["subject_id"],
         "topic_id": r["topic_id"], "topic_name": topic["name"] if topic else None,
         "grade": r["grade"], "difficulty": r["difficulty"], "qtype": r["qtype"],
         "content": r["content"], "options": r["options"],
-        "correct_answer": r["correct_answer"], "explanation": r["explanation"],
         "score": r["score"], "source": r["source"],
         "image_url": img or "",
         "code": code, "tags": tags,
     }
+    if include_answer:
+        out["correct_answer"] = r["correct_answer"]
+        out["explanation"] = r["explanation"]
+    return out

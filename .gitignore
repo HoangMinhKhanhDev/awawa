@@ -11,6 +11,7 @@ python-core/data/
 python-core/__pycache__/
 *.pyc
 api/uploads/
+api/storage/uploads/
 api/local.php
 .DS_Store
 .env

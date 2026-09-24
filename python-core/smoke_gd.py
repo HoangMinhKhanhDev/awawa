@@ -145,12 +145,15 @@ def main():
     bulkR = client.post("/api/students/bulk", json={"ids": [hs_id], "action": "set_role", "role": "student"}, headers=SH)
     print("bulk set_role", bulkR.status_code, bulkR.json())
 
-    exams = client.get("/api/exams?mode=shared").json()
+    exams_response = client.get("/api/exams?mode=shared", headers=SH)
+    assert exams_response.status_code == 200
+    exams = exams_response.json()
     if exams:
-        e1 = client.get(f"/api/exams/{exams[0]['id']}").json()
-        e2 = client.get(f"/api/exams/{exams[0]['id']}").json()
+        e1 = client.get(f"/api/exams/{exams[0]['id']}", headers=SH).json()
+        e2 = client.get(f"/api/exams/{exams[0]['id']}", headers=SH).json()
         ids1 = [q["id"] for q in e1.get("questions", [])]
         ids2 = [q["id"] for q in e2.get("questions", [])]
+        assert all("correct_answer" not in q and "explanation" not in q for q in e1.get("questions", []))
         print("exam n", len(ids1), "shuffled", e1.get("shuffled"), "same order", ids1 == ids2)
 
     if tid and role in ("teacher", "admin"):

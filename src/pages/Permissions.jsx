@@ -10,6 +10,19 @@ const ROLE_LABEL = {
   admin: 'Quản trị',
 }
 
+const ROLE_SCOPES = {
+  student: ['own'],
+  teacher: ['own', 'team'],
+  admin: ['own', 'team', 'school'],
+}
+
+const SCOPE_LABEL = {
+  own: 'Cá nhân',
+  team: 'Đội',
+  school: 'Trường',
+  system: 'Hệ thống',
+}
+
 const PERM_LABEL = {
   'practice': 'Luyện tập',
   'exam': 'Thi thử',
@@ -45,13 +58,24 @@ export default function Permissions() {
   const superOk = isSuperRole(me)
   const [data, setData] = useState(null)
   const [draft, setDraft] = useState({})
+  const [scopeDraft, setScopeDraft] = useState({})
   const [busy, setBusy] = useState(false)
 
   const load = async () => {
     try {
       const r = await api.permissions()
       setData(r)
-      if (r.can_manage && r.matrix) setDraft(JSON.parse(JSON.stringify(r.matrix)))
+      if (r.can_manage && r.matrix) {
+        setDraft(JSON.parse(JSON.stringify(r.matrix)))
+        const fallback = { student: 'own', teacher: 'team', admin: 'school' }
+        const scopes = JSON.parse(JSON.stringify(r.scope_matrix || {}))
+        for (const role of ['student', 'teacher', 'admin']) {
+          for (const key of r.perm_keys || Object.keys(PERM_LABEL)) {
+            if (!scopes[role]?.[key]) scopes[role] = { ...(scopes[role] || {}), [key]: fallback[role] }
+          }
+        }
+        setScopeDraft(scopes)
+      }
     } catch (e) { toast(errMsg(e), 'err') }
   }
   useEffect(() => { load() }, []) // eslint-disable-line
@@ -82,13 +106,24 @@ export default function Permissions() {
     }))
   }
 
+  const setScope = (role, key, scope) => {
+    setScopeDraft((current) => ({
+      ...current,
+      [role]: { ...(current[role] || {}), [key]: scope },
+    }))
+  }
+
   const saveRole = async (role) => {
     if (busy) return
     setBusy(true)
     try {
       const perms = {}
-      for (const k of keys) perms[k] = draft[role]?.[k] ? 1 : 0
-      await api.updatePermissions({ role, perms })
+      const scopes = {}
+      for (const k of keys) {
+        perms[k] = draft[role]?.[k] ? 1 : 0
+        scopes[k] = scopeDraft[role]?.[k] || ROLE_SCOPES[role][ROLE_SCOPES[role].length - 1]
+      }
+      await api.updatePermissions({ role, perms, scopes })
       toast(`Đã lưu phân quyền ${ROLE_LABEL[role] || role}.`)
       await load()
     } catch (e) { toast(errMsg(e), 'err') }
@@ -129,13 +164,23 @@ export default function Permissions() {
                 <td><b>{PERM_LABEL[k] || k}</b><div className="small muted">{k}</div></td>
                 {editableRoles.map((r) => (
                   <td key={r} style={{ textAlign: 'center' }}>
-                    <input
-                      type="checkbox"
-                      checked={!!(draft[r] || {})[k]}
-                      onChange={() => toggle(r, k)}
-                      aria-label={`${PERM_LABEL[k] || k} — ${ROLE_LABEL[r]}`}
-                      style={{ width: 18, height: 18 }}
-                    />
+                    <div className="perm-cell">
+                      <input
+                        type="checkbox"
+                        checked={!!(draft[r] || {})[k]}
+                        onChange={() => toggle(r, k)}
+                        aria-label={`${PERM_LABEL[k] || k} — ${ROLE_LABEL[r]}`}
+                        style={{ width: 18, height: 18 }}
+                      />
+                      <select
+                        className="select compact-select"
+                        value={scopeDraft[r]?.[k] || ROLE_SCOPES[r][ROLE_SCOPES[r].length - 1]}
+                        onChange={(event) => setScope(r, k, event.target.value)}
+                        aria-label={`Phạm vi ${PERM_LABEL[k] || k} — ${ROLE_LABEL[r]}`}
+                      >
+                        {ROLE_SCOPES[r].map((scope) => <option key={scope} value={scope}>{SCOPE_LABEL[scope]}</option>)}
+                      </select>
+                    </div>
                   </td>
                 ))}
                 <td style={{ textAlign: 'center' }}><span className="badge green">✓</span></td>

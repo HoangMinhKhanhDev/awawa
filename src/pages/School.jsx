@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react'
-import { IconCalendar, IconLayers, IconUsers, IconPlus, IconShield, IconSchool, IconUserPlus } from '../components/icons.jsx'
-import { api, getSession } from '../api.js'
+import { useCallback, useEffect, useState } from 'react'
+import { IconCalendar, IconLayers, IconUsers, IconPlus, IconSchool, IconUserPlus } from '../components/icons.jsx'
+import { api, getSession, isPhpMode } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 import { isAdminRole } from '../lib/roles.js'
+import { useSchoolScope } from '../app/school-context.jsx'
 
 export default function School() {
   const { toast, confirmBox, errMsg } = useUI()
   const me = getSession().student
-  const isAdmin = isAdminRole(me)
+  const { school, role: schoolRole, refresh: refreshScope } = useSchoolScope()
+  const isAdmin = isPhpMode ? schoolRole === 'admin' || schoolRole === 'super_admin' : isAdminRole(me)
   const [years, setYears] = useState([])
   const [grades, setGrades] = useState([])
   const [teams, setTeams] = useState([])
@@ -15,36 +17,58 @@ export default function School() {
   const [members, setMembers] = useState([])
   const [openTeam, setOpenTeam] = useState(null)
   const [yForm, setYForm] = useState({ name: '', start_date: '', end_date: '', is_current: 1 })
-  const [gForm, setGForm] = useState({ name: '', code: '' })
-  const [tForm, setTForm] = useState({ name: '', subject_id: '', grade_id: '', description: '' })
+  const [gForm, setGForm] = useState({ name: '', code: '', school_year_id: '' })
+  const [tForm, setTForm] = useState({ name: '', subject_id: '', school_year_id: '', grade_id: '', description: '' })
   const [allStudents, setAllStudents] = useState([])
+  const [users, setUsers] = useState([])
+  const [uForm, setUForm] = useState({ name: '', phone: '', role: 'student' })
   const [addUid, setAddUid] = useState('')
   const [addRole, setAddRole] = useState('student')
   const [saving, setSaving] = useState(false)
 
-  const load = async () => {
+  const load = useCallback(async () => {
+    if (isPhpMode && !school) return
     try {
-      const [y, g, t, s] = await Promise.all([
-        api.schoolYears().catch(() => []),
-        api.grades().catch(() => []),
-        api.teams().catch(() => []),
-        api.subjects().catch(() => []),
-      ])
-      setYears(y); setGrades(g); setTeams(t); setSubjects(s)
-      if (isAdmin) {
-        const st = await api.students().catch(() => [])
-        setAllStudents(st.filter((x) => (x.role || 'student') === 'student'))
+      if (isPhpMode) {
+        const [yearData, gradeData, teamData, subjectData] = await Promise.all([
+          api.v2SchoolYears(school.id),
+          api.schoolGrades(school.id),
+          api.allSchoolTeams(school.id),
+          api.schoolSubjects(school.id),
+        ])
+        setYears(yearData?.years || [])
+        setGrades(gradeData?.grades || [])
+        setTeams(teamData?.teams || [])
+        setSubjects(subjectData?.subjects || [])
+        if (isAdmin) {
+          const userData = await api.schoolUsers(school.id).catch(() => ({ users: [] }))
+          setUsers(userData?.users || [])
+          setAllStudents((userData?.users || []).filter((item) => item.status === 'active'))
+        }
+      } else {
+        const [y, g, t, s] = await Promise.all([
+          api.schoolYears().catch(() => []),
+          api.grades().catch(() => []),
+          api.teams().catch(() => []),
+          api.subjects().catch(() => []),
+        ])
+        setYears(y); setGrades(g); setTeams(t); setSubjects(s)
+        if (isAdmin) {
+          const st = await api.students().catch(() => [])
+          setUsers(st)
+          setAllStudents(st.filter((x) => (x.role || 'student') === 'student'))
+        }
       }
     } catch (e) { toast(errMsg(e), 'err') }
-  }
+  }, [errMsg, isAdmin, school, toast])
 
-  useEffect(() => { load() }, []) // eslint-disable-line
+  useEffect(() => { load() }, [load, refreshScope])
 
   const openMembers = async (team) => {
     setOpenTeam(team)
     try {
-      const m = await api.teamMembers(team.id)
-      setMembers(m)
+      const m = isPhpMode ? await api.schoolTeamMembers(school.id, team.subject_id, team.id) : await api.teamMembers(team.id)
+      setMembers(isPhpMode ? (m?.members || []) : m)
     } catch (e) { toast(errMsg(e), 'err'); setMembers([]) }
   }
 
@@ -53,7 +77,8 @@ export default function School() {
     if (!yForm.name.trim()) { toast('Nhập tên năm học.', 'warn'); return }
     setSaving(true)
     try {
-      await api.createSchoolYear({ ...yForm, is_current: yForm.is_current ? 1 : 0 })
+      if (isPhpMode) await api.createV2SchoolYear(school.id, { ...yForm, is_current: yForm.is_current ? 1 : 0 })
+      else await api.createSchoolYear({ ...yForm, is_current: yForm.is_current ? 1 : 0 })
       setYForm({ name: '', start_date: '', end_date: '', is_current: 0 })
       toast('Đã thêm năm học.')
       load()
@@ -61,13 +86,28 @@ export default function School() {
     setSaving(false)
   }
 
+  const saveUser = async () => {
+    if (saving) return
+    if (!uForm.name.trim() || !uForm.phone.trim()) { toast('Nhập tên và số điện thoại.', 'warn'); return }
+    setSaving(true)
+    try {
+      if (isPhpMode) await api.createSchoolUser(school.id, uForm)
+      else await api.createStudent(uForm)
+      setUForm({ name: '', phone: '', role: 'student' })
+      toast('Đã thêm người dùng.')
+      load()
+    } catch (e) { toast(errMsg(e), 'err') } finally { setSaving(false) }
+  }
+
   const saveGrade = async () => {
     if (saving) return
     if (!gForm.name.trim()) { toast('Nhập tên khối.', 'warn'); return }
+    if (isPhpMode && !gForm.school_year_id) { toast('Chọn năm học.', 'warn'); return }
     setSaving(true)
     try {
-      await api.createGrade(gForm)
-      setGForm({ name: '', code: '' })
+      if (isPhpMode) await api.createSchoolGrade(school.id, gForm)
+      else await api.createGrade(gForm)
+      setGForm({ name: '', code: '', school_year_id: gForm.school_year_id })
       toast('Đã thêm khối.')
       load()
     } catch (e) { toast(errMsg(e), 'err') }
@@ -77,14 +117,13 @@ export default function School() {
   const saveTeam = async () => {
     if (saving) return
     if (!tForm.name.trim()) { toast('Nhập tên đội tuyển.', 'warn'); return }
+    if (isPhpMode && (!tForm.subject_id || !tForm.school_year_id || !tForm.grade_id)) { toast('Chọn môn, năm học và khối.', 'warn'); return }
     setSaving(true)
     try {
-      await api.createTeam({
-        ...tForm,
-        grade_id: tForm.grade_id ? Number(tForm.grade_id) : null,
-        subject_id: tForm.subject_id || null,
-      })
-      setTForm({ name: '', subject_id: '', grade_id: '', description: '' })
+      const payload = { ...tForm, grade_id: tForm.grade_id ? Number(tForm.grade_id) : null, school_year_id: tForm.school_year_id ? Number(tForm.school_year_id) : null, subject_id: tForm.subject_id || null }
+      if (isPhpMode) await api.createSchoolTeam(school.id, tForm.subject_id, payload)
+      else await api.createTeam(payload)
+      setTForm({ name: '', subject_id: '', school_year_id: '', grade_id: '', description: '' })
       toast('Đã thêm đội tuyển.')
       load()
     } catch (e) { toast(errMsg(e), 'err') }
@@ -93,10 +132,9 @@ export default function School() {
 
   const toggleCurrent = async (y) => {
     try {
-      await api.updateSchoolYear(y.id, {
-        name: y.name, start_date: y.start_date || '', end_date: y.end_date || '',
-        is_current: y.is_current ? 0 : 1,
-      })
+      const payload = { name: y.name, start_date: y.start_date || '', end_date: y.end_date || '', is_current: y.is_current ? 0 : 1 }
+      if (isPhpMode) await api.updateV2SchoolYear(school.id, y.id, payload)
+      else await api.updateSchoolYear(y.id, payload)
       load()
     } catch (e) { toast(errMsg(e), 'err') }
   }
@@ -104,7 +142,8 @@ export default function School() {
   const addMember = async () => {
     if (!openTeam || !addUid) { toast('Chọn người.', 'warn'); return }
     try {
-      await api.addTeamMember(openTeam.id, { user_id: Number(addUid), member_role: addRole })
+      if (isPhpMode) await api.updateTeamMember(school.id, openTeam.subject_id, openTeam.id, Number(addUid), { role: addRole, access: 'include' })
+      else await api.addTeamMember(openTeam.id, { user_id: Number(addUid), member_role: addRole })
       setAddUid(''); setAddRole('student'); toast('Đã thêm thành viên.')
       openMembers(openTeam)
       load()
@@ -116,7 +155,8 @@ export default function School() {
     const ok = await confirmBox(`Rời đội ${name}?`, { danger: true, okLabel: 'Rời đội' })
     if (!ok) return
     try {
-      await api.removeTeamMember(openTeam.id, uid)
+      if (isPhpMode) await api.updateTeamMember(school.id, openTeam.subject_id, openTeam.id, uid, { role: 'student', access: 'exclude' })
+      else await api.removeTeamMember(openTeam.id, uid)
       openMembers(openTeam)
       load()
     } catch (e) { toast(errMsg(e), 'err') }
@@ -138,6 +178,26 @@ export default function School() {
       <div className="card">
         <h1 className="icon-h"><IconSchool className="icn" />Cấu trúc nhà trường</h1>
         <div className="small muted">Năm học → Khối → Đội tuyển → Thành viên. Phase 1a — phân quyền theo đội.</div>
+      </div>
+
+      <div className="card">
+        <h3 className="icon-h"><IconUsers className="icn" />Người dùng trường</h3>
+        {isPhpMode ? (
+          <table className="tbl">
+            <thead><tr><th>Người dùng</th><th>Vai trò</th><th>Trạng thái</th><th>Đội</th></tr></thead>
+            <tbody>
+              {users.map((user) => <tr key={user.id}><td><b>{user.name}</b><div className="small muted">{user.phone || '—'}</div></td><td>{user.role}</td><td><span className={`badge ${user.status === 'active' ? 'green' : 'red'}`}>{user.status === 'active' ? 'Hoạt động' : 'Khóa'}</span></td><td>{user.team_count || 0}</td></tr>)}
+            </tbody>
+          </table>
+        ) : <div className="small muted">Quản lý người dùng theo trường sẽ dùng PHP API v2 sau khi bật migration.</div>}
+        <div className="row" style={{ marginTop: 12 }}>
+          <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="Họ tên" aria-label="Họ tên người dùng" value={uForm.name} onChange={(e) => setUForm({ ...uForm, name: e.target.value })} />
+          <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="Số điện thoại" aria-label="Số điện thoại" value={uForm.phone} onChange={(e) => setUForm({ ...uForm, phone: e.target.value })} />
+          <select className="select" style={{ maxWidth: 130 }} aria-label="Vai trò người dùng" value={uForm.role} onChange={(e) => setUForm({ ...uForm, role: e.target.value })}>
+            <option value="student">Học sinh</option><option value="teacher">Giáo viên</option><option value="admin">Quản trị</option>
+          </select>
+          <button className="btn primary" onClick={saveUser} disabled={saving}><IconUserPlus className="icn sm" />Thêm</button>
+        </div>
       </div>
 
       <div className="card">
@@ -176,6 +236,10 @@ export default function School() {
             </tbody>
           </table>
           <div className="row" style={{ marginTop: 10 }}>
+            {isPhpMode && <select className="select" style={{ maxWidth: 150 }} aria-label="Năm học của khối" value={gForm.school_year_id} onChange={(e) => setGForm({ ...gForm, school_year_id: e.target.value })}>
+              <option value="">Năm học —</option>
+              {years.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}
+            </select>}
             <input className="input" style={{ flex: 1 }} placeholder="Khối 13" aria-label="Tên khối" value={gForm.name} onChange={(e) => setGForm({ ...gForm, name: e.target.value })} />
             <input className="input" style={{ maxWidth: 80 }} placeholder="13" aria-label="Mã khối" value={gForm.code} onChange={(e) => setGForm({ ...gForm, code: e.target.value })} />
             <button className="btn primary" aria-label="Thêm khối" onClick={saveGrade} disabled={saving}><IconPlus className="icn sm" /></button>
@@ -202,7 +266,7 @@ export default function School() {
               <div className="row" style={{ marginTop: 10 }}>
                 <select className="select" style={{ flex: 1 }} aria-label="Chọn tài khoản" value={addUid} onChange={(e) => setAddUid(e.target.value)}>
                   <option value="">— Chọn tài khoản —</option>
-                  {allStudents.map((s) => (
+                  {allStudents.filter((item) => addRole === 'coach' ? ['teacher', 'admin'].includes(item.role) : item.role === 'student').map((s) => (
                     <option key={s.id} value={s.id}>{s.name} ({s.phone || s.email || s.id})</option>
                   ))}
                 </select>
@@ -248,6 +312,10 @@ export default function School() {
         </table>
         <div className="row" style={{ marginTop: 12 }}>
           <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="Tên đội (VD: HSG Sinh học)" aria-label="Tên đội" value={tForm.name} onChange={(e) => setTForm({ ...tForm, name: e.target.value })} />
+          {isPhpMode && <select className="select" style={{ maxWidth: 150 }} aria-label="Năm học của đội" value={tForm.school_year_id} onChange={(e) => setTForm({ ...tForm, school_year_id: e.target.value })}>
+            <option value="">Năm học —</option>
+            {years.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}
+          </select>}
           <select className="select" style={{ maxWidth: 180 }} aria-label="Môn của đội" value={tForm.subject_id} onChange={(e) => setTForm({ ...tForm, subject_id: e.target.value })}>
             <option value="">Môn —</option>
             {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}

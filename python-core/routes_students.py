@@ -103,7 +103,9 @@ def create_student(payload: StudentIn, request: Request):
 
 @router.put("/api/students/{sid}")
 def update_student(sid: int, payload: StudentIn, request: Request):
-    require_teacher(request)
+    from auth import require_same_team_or_admin
+    me = require_teacher(request)
+    require_same_team_or_admin(me, sid)
     from fastapi import HTTPException
     r = get_db().q1("SELECT * FROM students WHERE id=?", (sid,))
     if not r:
@@ -150,7 +152,9 @@ def set_active(sid: int, payload: ActiveIn, request: Request):
 
 @router.delete("/api/students/{sid}")
 def delete_student(sid: int, request: Request):
-    require_teacher(request)
+    from auth import require_same_team_or_admin
+    me = require_teacher(request)
+    require_same_team_or_admin(me, sid)
     get_db().exec("DELETE FROM team_members WHERE user_id=?", (sid,))
     get_db().exec("DELETE FROM students WHERE id=?", (sid,))
     return {"ok": True}
@@ -158,7 +162,9 @@ def delete_student(sid: int, request: Request):
 
 @router.put("/api/students/{sid}/reset-password")
 def reset_password(sid: int, payload: ResetIn, request: Request):
-    require_teacher(request)
+    from auth import require_same_team_or_admin
+    me = require_teacher(request)
+    require_same_team_or_admin(me, sid)
     from fastapi import HTTPException
     if not get_db().q1("SELECT 1 FROM students WHERE id=?", (sid,)):
         raise HTTPException(404, "Khong tim thay hoc sinh")

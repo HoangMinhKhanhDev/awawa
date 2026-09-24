@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from auth import optional_session
+from auth import optional_session, require_perm
 from deps import get_db
 from models import ExamIn, SubmitIn
 from serializers import row_to_q
@@ -14,7 +14,11 @@ router = APIRouter()
 
 
 @router.post("/api/exams")
-def create_exam(payload: ExamIn):
+def create_exam(payload: ExamIn, request: Request):
+    if optional_session(request) is None:
+        raise HTTPException(401, "Chua dang nhap.")
+    if (payload.mode or "exam") == "shared":
+        require_perm(request, "studio.manage")
     now = datetime.now().isoformat(timespec="seconds")
     mode = payload.mode or "exam"
     cur = get_db().exec("INSERT INTO exams (title, mode, duration_min, question_ids, created_at) VALUES (?,?,?,?,?)",
@@ -24,7 +28,8 @@ def create_exam(payload: ExamIn):
 
 @router.get("/api/exams")
 def list_exams(request: Request, mode: str = "shared"):
-    """GV đăng đề chia sẻ (mode=shared). HS xem danh sách shared để bấm làm."""
+    if optional_session(request) is None:
+        raise HTTPException(401, "Chua dang nhap.")
     rows = get_db().q(
         """SELECT id, title, mode, duration_min, question_ids, created_at
            FROM exams WHERE mode=? ORDER BY id DESC LIMIT 50""",
@@ -44,7 +49,9 @@ def list_exams(request: Request, mode: str = "shared"):
 
 
 @router.get("/api/exams/{eid}")
-def get_exam(eid: int, shuffle: int = 1):
+def get_exam(eid: int, request: Request, shuffle: int = 1):
+    if optional_session(request) is None:
+        raise HTTPException(401, "Chua dang nhap.")
     r = get_db().q1("SELECT * FROM exams WHERE id=?", (eid,))
     if not r: raise HTTPException(404, "Khong tim thay de")
     try: ids = json.loads(r["question_ids"] or "[]")
@@ -71,12 +78,23 @@ def get_exam(eid: int, shuffle: int = 1):
 
 @router.post("/api/exams/{eid}/submit")
 def submit_exam(eid: int, payload: SubmitIn, request: Request):
+    sess = optional_session(request)
+    if sess is None:
+        raise HTTPException(401, "Chua dang nhap.")
     exam = get_db().q1("SELECT * FROM exams WHERE id=?", (eid,)) if eid and eid < 10**12 else None
-    mode = exam["mode"] if exam else "practice"
+    if exam is None:
+        raise HTTPException(404, "Khong tim thay de")
+    try:
+        allowed_ids = {int(qid) for qid in json.loads(exam["question_ids"] or "[]")}
+    except Exception:
+        allowed_ids = set()
+    mode = exam["mode"]
     correct = 0
     total = 0
     for a in payload.answers or []:
         qid = a.get("question_id")
+        if not qid or int(qid) not in allowed_ids:
+            raise HTTPException(422, "Cau hoi khong thuoc de.")
         qr = get_db().q1("SELECT * FROM questions WHERE id=?", (qid,)) if qid else None
         if qr is None:
             continue
@@ -108,11 +126,10 @@ def submit_exam(eid: int, payload: SubmitIn, request: Request):
     if not isinstance(focus_log, list):
         focus_log = []
     focus_log = focus_log[:200]  # chá»‘ng log quÃ¡ lá»›n
-    sess = optional_session(request)
-    sid = sess["id"] if sess else None
+    sid = sess["id"]
     cur = get_db().exec("INSERT INTO attempts (exam_id, mode, correct, total, accuracy, detail, student_name, student_id, focus_exits, focus_log, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                  (eid if exam else None, mode, correct, total, acc, json.dumps(payload.answers or [], ensure_ascii=False),
-                   (payload.student_name or "").strip()[:100], sid, focus_exits, json.dumps(focus_log, ensure_ascii=False), now))
+                  (eid, mode, correct, total, acc, json.dumps(payload.answers or [], ensure_ascii=False),
+                   str(sess.get("name") or "").strip()[:100], sid, focus_exits, json.dumps(focus_log, ensure_ascii=False), now))
     return {"attempt_id": cur.lastrowid, "correct": correct, "total": total, "accuracy": acc,
             "focus_exits": focus_exits}
 

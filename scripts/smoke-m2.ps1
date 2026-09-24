@@ -1,5 +1,6 @@
-$B = 'https://awawa.herbspalab.com'
-$T = 'cqXy0vBPqyMfMR-6rXK7o6Oa9qpoE9Mv0yIUOgBfaMY'
+$B = $env:API_BASE
+$T = $env:API_TOKEN
+if ([string]::IsNullOrWhiteSpace($B) -or [string]::IsNullOrWhiteSpace($T)) { throw 'Set API_BASE and API_TOKEN before running this smoke test.' }
 function Call($method, $url, $body, $headers) {
   $f = "$env:TEMP\m2.json"
   if ($body) { [System.IO.File]::WriteAllText($f, $body) } else { $f = $null }

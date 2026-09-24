@@ -6,11 +6,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Request
 
-from auth import optional_session, require_teacher
+from auth import optional_session, require_perm, require_teacher
 from deps import get_db
-from models import (AssignmentCreateIn, AssignmentSubmitIn, ClassCreateIn,
-                    ClassJoinIn, CompleteIn, GradeIn, LessonCreateIn,
-                    LessonUpdateIn, NotificationReadIn)
+from models import (AssignmentCreateIn, AssignmentSubmitIn, BlockIn,
+                    ClassCreateIn, ClassJoinIn, CompleteIn, GradeIn,
+                    LessonCreateIn, LessonUpdateIn, NotificationReadIn)
 
 router = APIRouter()
 
@@ -344,19 +344,6 @@ def draft_assignment(aid: int, payload: AssignmentSubmitIn, request: Request):
     return {"id": sid, "status": "draft"}
 
 
-def sync_submission_answers(sid: int, aid: int, amap: dict):
-    db = get_db()
-    aqs = db.q("SELECT id, idx, question_id FROM assign_questions WHERE assignment_id=? ORDER BY idx", (aid,))
-    if not aqs:
-        return
-    db.exec("DELETE FROM submission_answers WHERE submission_id=?", (sid,))
-    for aq in aqs:
-        idx = int(aq["idx"])
-        text = amap.get(idx, amap.get(str(idx), ""))
-        db.exec("INSERT INTO submission_answers (submission_id, question_id, assign_q_idx, answer) VALUES (?,?,?,?)",
-                (sid, aq["question_id"], idx, str(text or "")[:4000]))
-
-
 @router.get("/api/assignments/{aid}/submissions")
 def list_submissions(aid: int, request: Request):
     from fastapi import HTTPException
@@ -365,6 +352,8 @@ def list_submissions(aid: int, request: Request):
     a = db.q1("SELECT * FROM assignments WHERE id=?", (aid,))
     if not a:
         raise HTTPException(404, "Khong tim thay bai tap.")
+    from auth import require_team_coach_or_admin
+    require_team_coach_or_admin(optional_session(request), int(a["team_id"]))
     rows = db.q(
         """SELECT s.id sid, s.name, s.class_name, sub.id sub_id, sub.answer, sub.score, sub.feedback,
                   sub.submitted_at, sub.graded_at, sub.question_scores, sub.files
@@ -422,6 +411,9 @@ def grade_submission(sid: int, payload: GradeIn, request: Request):
     sub = db.q1("SELECT * FROM submissions WHERE id=?", (sid,))
     if not sub:
         raise HTTPException(404, "Khong tim thay bai nop.")
+    _gass = db.q1("SELECT team_id FROM assignments WHERE id=?", (sub["assignment_id"],))
+    from auth import require_team_coach_or_admin
+    require_team_coach_or_admin(optional_session(request), int((_gass or {}).get("team_id") or 0))
     score = max(0.0, min(10.0, float(payload.score)))
     now = datetime.now().isoformat(timespec="seconds")
     qs_json = json.dumps(payload.question_scores, ensure_ascii=False) if payload.question_scores is not None else None
@@ -535,16 +527,26 @@ def me_progress(request: Request):
                    (me["id"],))
         latest_title = lt["title"] if lt else None
 
-    lessons_total = db.q1("SELECT COUNT(*) c FROM lessons")["c"]
-    lessons_done = db.q1("SELECT COUNT(*) c FROM lesson_completions WHERE student_id=?", (me["id"]))["c"]
+    lessons_total = db.q1(
+        """SELECT COUNT(*) c FROM lessons l JOIN topics t ON t.id=l.topic_id
+           WHERE COALESCE(l.status,'published')='published'
+             AND COALESCE(t.status,'published')='published'""")["c"]
+    lessons_done = db.q1(
+        """SELECT COUNT(*) c FROM lesson_completions lc
+           JOIN lessons l ON l.id=lc.lesson_id
+           JOIN topics t ON t.id=l.topic_id
+           WHERE lc.student_id=?
+             AND COALESCE(l.status,'published')='published'
+             AND COALESCE(t.status,'published')='published'""", (me["id"],))["c"]
     topic_rows = db.q(
         """SELECT t.id, t.name,
-                  (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id AND COALESCE(l.required,1)=1) req_total,
-                  (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id AND COALESCE(l.required,1)=1) req_done,
-                  (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id) lt,
-                  (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id) ld
+                  (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id AND COALESCE(l.status,'published')='published' AND COALESCE(l.required,1)=1) req_total,
+                  (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id AND COALESCE(l.status,'published')='published' AND COALESCE(l.required,1)=1) req_done,
+                  (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id AND COALESCE(l.status,'published')='published') lt,
+                  (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id AND COALESCE(l.status,'published')='published') ld
            FROM topics t
-           WHERE (SELECT COUNT(*) FROM lessons l2 WHERE l2.topic_id=t.id) > 0""",
+           WHERE COALESCE(t.status,'published')='published'
+             AND (SELECT COUNT(*) FROM lessons l2 WHERE l2.topic_id=t.id AND COALESCE(l2.status,'published')='published') > 0""",
         (me["id"], me["id"]))
     topics_done = 0
     topics_total = 0
@@ -593,16 +595,29 @@ def list_lessons(request: Request, topic_id: str = ""):
     rows = get_db().q(
         """SELECT l.id, l.topic_id, l.title, l.content, l.idx,
                   COALESCE(l.required,1) required, COALESCE(l.advanced,0) advanced,
-                  t.name topic_name,
+                  COALESCE(l.status,'published') status, l.published_at,
+                  t.name topic_name, COALESCE(t.status,'published') topic_status,
                   (SELECT 1 FROM lesson_completions lc WHERE lc.lesson_id=l.id AND lc.student_id=?) completed
            FROM lessons l JOIN topics t ON t.id=l.topic_id WHERE l.topic_id=? ORDER BY l.idx, l.id""",
         (me["id"], topic_id))
+    staff = is_teacher(me)
+    if not staff:
+        rows = [r for r in rows if (r["status"] or "published") == "published" and (r["topic_status"] or "published") == "published"]
+    bids = [int(r["id"]) for r in rows]
+    bmap = {}
+    if bids:
+        qmarks = ",".join("?" * len(bids))
+        for b in get_db().q(
+                f"SELECT id, lesson_id, type, content, position, metadata FROM lesson_blocks WHERE lesson_id IN ({qmarks}) ORDER BY position, id",
+                tuple(bids)):
+            bmap.setdefault(int(b["lesson_id"]), []).append(dict(b))
     out = []
     for r in rows:
         d = dict(r)
         d["completed"] = bool(d["completed"])
         d["required"] = bool(d["required"])
         d["advanced"] = bool(d["advanced"])
+        d["blocks"] = bmap.get(int(d["id"]), [])
         out.append(d)
     # Dieu kien hoan thanh: toan bo bai bat buoc da danh dau
     required = [x for x in out if x["required"]]
@@ -618,7 +633,7 @@ def list_lessons(request: Request, topic_id: str = ""):
 @router.post("/api/lessons")
 def create_lesson(payload: LessonCreateIn, request: Request):
     from fastapi import HTTPException
-    require_teacher(request)
+    require_perm(request, "lessons.write")
     db = get_db()
     topic_id = (payload.topic_id or "").strip()
     title = (payload.title or "").strip()[:255]
@@ -626,16 +641,24 @@ def create_lesson(payload: LessonCreateIn, request: Request):
         raise HTTPException(400, "Thieu chu de hoac tieu de.")
     if not db.q1("SELECT 1 FROM topics WHERE id=?", (topic_id,)):
         raise HTTPException(400, "Chuyen de khong ton tai.")
-    cur = db.exec("INSERT INTO lessons (topic_id, title, content, idx, required, advanced) VALUES (?,?,?,?,?,?)",
+    status = payload.status if payload.status is not None else "published"
+    if status not in ('draft', 'review', 'published', 'archived'):
+        raise HTTPException(400, "Trang thai khong hop le.")
+    published_at = datetime.now().isoformat(timespec="seconds") if status == "published" else None
+    cur = db.exec("INSERT INTO lessons (topic_id, title, content, idx, required, advanced, status, published_at) VALUES (?,?,?,?,?,?,?,?)",
                   (topic_id, title, payload.content or "", max(1, payload.idx),
-                   1 if payload.required else 0, 1 if payload.advanced else 0))
-    return {"id": cur.lastrowid}
+                   1 if payload.required else 0, 1 if payload.advanced else 0, status, published_at))
+    nid = cur.lastrowid
+    if (payload.content or "").strip():
+        db.exec("INSERT INTO lesson_blocks (lesson_id, type, content, position) VALUES (?,?,?,1)",
+                (nid, "text", payload.content or ""))
+    return {"id": nid}
 
 
 @router.put("/api/lessons/{lid}")
 def update_lesson(lid: int, payload: LessonUpdateIn, request: Request):
     from fastapi import HTTPException
-    require_teacher(request)
+    require_perm(request, "lessons.write")
     db = get_db()
     l = db.q1("SELECT * FROM lessons WHERE id=?", (lid,))
     if not l:
@@ -645,20 +668,102 @@ def update_lesson(lid: int, payload: LessonUpdateIn, request: Request):
     idx = payload.idx if payload.idx is not None else l["idx"]
     required = payload.required if payload.required is not None else (l["required"] if l["required"] is not None else 1)
     advanced = payload.advanced if payload.advanced is not None else (l["advanced"] if l["advanced"] is not None else 0)
-    db.exec("UPDATE lessons SET title=?, content=?, idx=?, required=?, advanced=? WHERE id=?",
-            (title, content, max(1, int(idx)), 1 if required else 0, 1 if advanced else 0, lid))
+    status = payload.status if payload.status is not None else (l["status"] if "status" in l.keys() and l["status"] else "published")
+    if status not in ('draft', 'review', 'published', 'archived'):
+        raise HTTPException(400, "Trang thai khong hop le.")
+    pub = None
+    if status == "published" and not (l["published_at"] if "published_at" in l.keys() else None):
+        from datetime import datetime as _dt
+        pub = _dt.now().isoformat(timespec="seconds")
+    if pub:
+        db.exec("UPDATE lessons SET title=?, content=?, idx=?, required=?, advanced=?, status=?, published_at=? WHERE id=?",
+                (title, content, max(1, int(idx)), 1 if required else 0, 1 if advanced else 0, status, pub, lid))
+    else:
+        db.exec("UPDATE lessons SET title=?, content=?, idx=?, required=?, advanced=?, status=? WHERE id=?",
+                (title, content, max(1, int(idx)), 1 if required else 0, 1 if advanced else 0, status, lid))
     return {"ok": True}
 
 
 @router.delete("/api/lessons/{lid}")
 def delete_lesson(lid: int, request: Request):
     from fastapi import HTTPException
-    require_teacher(request)
+    require_perm(request, "lessons.write")
     db = get_db()
     if not db.q1("SELECT 1 FROM lessons WHERE id=?", (lid,)):
         raise HTTPException(404, "Khong tim thay bai hoc.")
     db.exec("DELETE FROM lesson_completions WHERE lesson_id=?", (lid,))
+    db.exec("DELETE FROM lesson_blocks WHERE lesson_id=?", (lid,))
     db.exec("DELETE FROM lessons WHERE id=?", (lid,))
+    return {"ok": True}
+
+
+BLOCK_TYPES = ("text", "image", "table", "note", "example", "fill_blank", "question", "attachment")
+
+
+@router.get("/api/lessons/{lid}/blocks")
+def list_blocks(lid: int, request: Request):
+    from fastapi import HTTPException
+    me = me_or_401(request)
+    db = get_db()
+    lesson = db.q1(
+        """SELECT l.id, COALESCE(l.status,'published') status,
+                  COALESCE(t.status,'published') topic_status
+           FROM lessons l JOIN topics t ON t.id=l.topic_id WHERE l.id=?""", (lid,))
+    if not lesson:
+        raise HTTPException(404, "Khong tim thay bai hoc.")
+    if not is_teacher(me) and ((lesson["status"] or "published") != "published" or (lesson["topic_status"] or "published") != "published"):
+        raise HTTPException(404, "Khong tim thay bai hoc.")
+    return [dict(r) for r in db.q(
+        "SELECT id, lesson_id, type, content, position, metadata FROM lesson_blocks WHERE lesson_id=? ORDER BY position, id",
+        (lid,))]
+
+
+@router.post("/api/lessons/{lid}/blocks")
+def create_block(lid: int, payload: BlockIn, request: Request):
+    from fastapi import HTTPException
+    require_perm(request, "lessons.write")
+    db = get_db()
+    if not db.q1("SELECT 1 FROM lessons WHERE id=?", (lid,)):
+        raise HTTPException(404, "Khong tim thay bai hoc.")
+    btype = (payload.type or "text").strip()
+    if btype not in BLOCK_TYPES:
+        raise HTTPException(400, "Loai block khong hop le.")
+    pos = int(payload.position or 0)
+    if pos <= 0:
+        pos = (db.q1("SELECT COALESCE(MAX(position),0)+1 p FROM lesson_blocks WHERE lesson_id=?", (lid,)) or {"p": 1})["p"]
+    meta = payload.metadata if isinstance(payload.metadata, str) else (json.dumps(payload.metadata, ensure_ascii=False) if payload.metadata is not None else None)
+    cur = db.exec("INSERT INTO lesson_blocks (lesson_id, type, content, position, metadata) VALUES (?,?,?,?,?)",
+                  (lid, btype, payload.content or "", pos, meta))
+    return {"id": cur.lastrowid}
+
+
+@router.put("/api/blocks/{bid}")
+def update_block(bid: int, payload: BlockIn, request: Request):
+    from fastapi import HTTPException
+    require_perm(request, "lessons.write")
+    db = get_db()
+    bl = db.q1("SELECT * FROM lesson_blocks WHERE id=?", (bid,))
+    if not bl:
+        raise HTTPException(404, "Khong tim thay block.")
+    btype = (payload.type if payload.type is not None else bl["type"]).strip()
+    if btype not in BLOCK_TYPES:
+        raise HTTPException(400, "Loai block khong hop le.")
+    content = payload.content if payload.content is not None else (bl["content"] or "")
+    pos = int(payload.position) if payload.position is not None else int(bl["position"] or 1)
+    if pos <= 0:
+        pos = int(bl["position"] or 1)
+    meta = bl["metadata"]
+    if payload.metadata is not None:
+        meta = payload.metadata if isinstance(payload.metadata, str) else json.dumps(payload.metadata, ensure_ascii=False)
+    db.exec("UPDATE lesson_blocks SET type=?, content=?, position=?, metadata=? WHERE id=?",
+            (btype, content, pos, meta, bid))
+    return {"ok": True}
+
+
+@router.delete("/api/blocks/{bid}")
+def delete_block(bid: int, request: Request):
+    require_perm(request, "lessons.write")
+    get_db().exec("DELETE FROM lesson_blocks WHERE id=?", (bid,))
     return {"ok": True}
 
 
@@ -666,7 +771,7 @@ def delete_lesson(lid: int, request: Request):
 def move_lesson(lid: int, request: Request, direction: str = "up"):
     """Doi thu tu bai hoc len/xuong (swap idx voi bai ke can)."""
     from fastapi import HTTPException
-    require_teacher(request)
+    require_perm(request, "lessons.write")
     db = get_db()
     l = db.q1("SELECT * FROM lessons WHERE id=?", (lid,))
     if not l:
@@ -694,7 +799,13 @@ def complete_lesson(lid: int, payload: CompleteIn, request: Request):
     if is_teacher(me):
         raise HTTPException(400, "Giao vien khong danh dau bai hoc.")
     db = get_db()
-    if not db.q1("SELECT 1 FROM lessons WHERE id=?", (lid,)):
+    lesson = db.q1(
+        """SELECT l.id, COALESCE(l.status,'published') status,
+                  COALESCE(t.status,'published') topic_status
+           FROM lessons l JOIN topics t ON t.id=l.topic_id WHERE l.id=?""", (lid,))
+    if not lesson:
+        raise HTTPException(404, "Khong tim thay bai hoc.")
+    if (lesson["status"] or "published") != "published" or (lesson["topic_status"] or "published") != "published":
         raise HTTPException(404, "Khong tim thay bai hoc.")
     if payload.undo:
         db.exec("DELETE FROM lesson_completions WHERE student_id=? AND lesson_id=?", (me["id"], lid))
