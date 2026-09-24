@@ -30,6 +30,8 @@ export default defineConfig({
       devOptions: { enabled: true, type: 'module' },
       workbox: {
         cleanupOutdatedCaches: true,
+        navigateFallback: 'index.html',
+        navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [],
       }
     })
