@@ -1788,15 +1788,18 @@ if ($path === '/ai/generate-stream' && $method === 'POST') {
     $type = trim($b['type'] ?? '');
     if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze'), true)) jerr('type khong hop le.');
     $built = ai_build_messages($b);
+    @set_time_limit(180);
+    @ini_set('max_execution_time', '180');
+    @ini_set('output_buffering', '0');
     header('Content-Type: text/event-stream; charset=utf-8');
     header('Cache-Control: no-cache');
     header('X-Accel-Buffering: no');
-    if (function_exists('ob_end_flush')) { @ob_end_flush(); }
-    @ini_set('zlib.output_compression', '0');
+    while (ob_get_level() > 0) { @ob_end_flush(); }
     $emit = function ($event, $data) {
         echo 'event: ' . $event . "\n";
         echo 'data: ' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n\n";
         if (function_exists('flush')) flush();
+        if (function_exists('ob_flush')) @ob_flush();
     };
     $emit('meta', array('type' => $type, 'model' => $built['model'] ?: AGNES_DEFAULT_MODEL));
     $raw = agnes_chat_stream($built['messages'], $built['model'], $emit, 4000, 0.4);

@@ -454,6 +454,8 @@ function agnes_parse_json($text) {
 function agnes_chat_stream($messages, $model, $emit, $max_tokens = 4000, $temperature = 0.4) {
     if (AGNES_API_KEY === '') { $emit('error', array('message' => 'Thieu AGNES_API_KEY.')); return null; }
     if ($model === '' || !in_array($model, agnes_models(), true)) $model = AGNES_DEFAULT_MODEL;
+    @set_time_limit(180);
+    @ini_set('max_execution_time', '180');
     $payload = json_encode(array(
         'model' => $model,
         'messages' => $messages,
@@ -464,20 +466,27 @@ function agnes_chat_stream($messages, $model, $emit, $max_tokens = 4000, $temper
     $ch = curl_init(rtrim(AGNES_BASE_URL, '/') . '/chat/completions');
     $buf = '';
     $full = '';
-    $emit_fn = function ($ch, $chunk) use (&$buf, &$full, $emit) {
+    $saw_any = false;
+    $emit_fn = function ($ch, $chunk) use (&$buf, &$full, &$saw_any, $emit) {
+        $saw_any = true;
         $buf .= $chunk;
-        // SSE: moi line bat dau "data: " (hoac data:)
         while (($pos = strpos($buf, "\n")) !== false) {
             $line = rtrim(substr($buf, 0, $pos), "\r");
             $buf = substr($buf, $pos + 1);
-            if ($line === '' || strpos($line, 'data:') !== 0) continue;
-            $data = trim(substr($line, 5));
-            if ($data === '[DONE]') continue;
-            $j = json_decode($data, true);
-            $delta = $j['choices'][0]['delta']['content'] ?? '';
-            if ($delta !== '') {
-                $full .= $delta;
-                $emit('delta', array('text' => $delta));
+            if ($line === '' ) continue;
+            // SSE: "data: ..." hoac "data:{...}" — cung dung duoc neu AI tra JSON thuan (khong SSE)
+            if (strpos($line, 'data:') === 0) {
+                $data = trim(substr($line, 5));
+                if ($data === '' || $data === '[DONE]') continue;
+                $j = json_decode($data, true);
+                $delta = $j['choices'][0]['delta']['content'] ?? '';
+                if ($delta !== '') {
+                    $full .= $delta;
+                    $emit('delta', array('text' => $delta));
+                }
+            } else {
+                // Khong phai SSE line — co the la JSON body thuan: ghi nham vao full de parse sau
+                $full .= $line;
             }
         }
         return strlen($chunk);
@@ -510,7 +519,9 @@ function agnes_chat_stream($messages, $model, $emit, $max_tokens = 4000, $temper
         return null;
     }
     if ($full === '') {
-        $emit('error', array('message' => 'AI khong tra ve noi dung.'));
+        $emit('error', array('message' => $saw_any
+            ? 'AI ket noi nhung khong tra dung dinh dang stream. Thu model khac.'
+            : 'AI khong tra ve noi dung (ket noi rong).'));
         return null;
     }
     return $full;
