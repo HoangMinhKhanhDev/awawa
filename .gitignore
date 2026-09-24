@@ -18,3 +18,6 @@ api/local.php
 .env.hostinger
 *.zip
 docs/tmp/
+scripts/server-local.php
+scripts/*-payload.json
+scripts/hostinger-call.cjs.bak
