@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react'
 import { IconCalendar, IconLayers, IconUsers, IconPlus, IconShield, IconSchool, IconUserPlus } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
+import { isAdminRole } from '../lib/roles.js'
 
 export default function School() {
   const { toast, confirmBox, errMsg } = useUI()
   const me = getSession().student
-  const isAdmin = (me?.role || 'student') === 'admin'
+  const isAdmin = isAdminRole(me)
   const [years, setYears] = useState([])
   const [grades, setGrades] = useState([])
   const [teams, setTeams] = useState([])

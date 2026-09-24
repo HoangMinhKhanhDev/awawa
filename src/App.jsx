@@ -7,6 +7,7 @@ import {
 } from './components/icons.jsx'
 import { UIProvider } from './components/ui.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
+import NotificationsBell from './components/NotificationsBell.jsx'
 import Home from './pages/Home.jsx'
 import Login from './pages/Login.jsx'
 import Topics from './pages/Topics.jsx'
@@ -106,7 +107,9 @@ function AppInner() {
 
   const s = getSession()
   const role = s.student?.role || 'student'
-  const isStaff = role === 'teacher' || role === 'admin'
+  const isStaff = role === 'teacher' || role === 'admin' || role === 'super_admin'
+  const isAdmin = role === 'admin' || role === 'super_admin'
+  const isSuper = role === 'super_admin'
   const desktopTabs = isStaff ? teacherTabs : studentTabs
   const mobileTabs = isStaff ? teacherMobile : studentMobile
 
@@ -124,7 +127,8 @@ function AppInner() {
             <NavLink className="navlink small" to="/exam"><IconTimer className="icn sm" />Thi thử bấm giờ</NavLink>
             {isStaff && <NavLink className="navlink small" to="/manage/bank"><IconShield className="icn sm" />Ngân hàng đề</NavLink>}
             {isStaff && <NavLink className="navlink small" to="/manage/import"><IconFileUp className="icn sm" />Nhập đề DOCX</NavLink>}
-            {role === 'admin' && <NavLink className="navlink small" to="/manage/school"><IconSchool className="icn sm" />Nhà trường</NavLink>}
+            {isAdmin && <NavLink className="navlink small" to="/manage/school"><IconSchool className="icn sm" />Nhà trường</NavLink>}
+            {isSuper && <NavLink className="navlink small" to="/manage/permissions"><IconShield className="icn sm" />Phân quyền</NavLink>}
           </div>
         </nav>
         <div className="sidefoot">
@@ -144,6 +148,7 @@ function AppInner() {
       <header className="topbar">
         <b><IconSprout className="icn sm" />Ôn luyện HSG</b>
         <span className="row">
+          <NotificationsBell />
           <button
             className="theme-toggle"
             aria-label={theme === 'dark' ? 'Chuyển sang chế độ sáng' : 'Chuyển sang chế độ tối'}

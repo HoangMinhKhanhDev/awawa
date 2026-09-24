@@ -8,6 +8,21 @@ def row_to_q(r):
         img = r["image_url"]
     except Exception:
         img = ""
+    try:
+        code = r["code"] or ""
+    except Exception:
+        code = ""
+    try:
+        tags_raw = r["tags"] or "[]"
+    except Exception:
+        tags_raw = "[]"
+    import json as _json
+    try:
+        tags = _json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+        if not isinstance(tags, list):
+            tags = []
+    except Exception:
+        tags = []
     return {
         "id": r["id"], "subject_id": r["subject_id"],
         "subject_name": subj["name"] if subj else r["subject_id"],
@@ -17,4 +32,5 @@ def row_to_q(r):
         "correct_answer": r["correct_answer"], "explanation": r["explanation"],
         "score": r["score"], "source": r["source"],
         "image_url": img or "",
+        "code": code, "tags": tags,
     }

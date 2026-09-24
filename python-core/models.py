@@ -15,6 +15,45 @@ class QuestionIn(BaseModel):
     explanation: str = ""
     score: float = 1
     image_url: str = ""
+    code: str = ""
+    tags: list = []
+class TopicUpdateIn(BaseModel):
+    name: str = ""
+    description: str = ""
+    grade: Optional[int] = None
+class LessonUpdateIn(BaseModel):
+    title: str = ""
+    content: Optional[str] = None
+    idx: Optional[int] = None
+    required: Optional[int] = None
+    advanced: Optional[int] = None
+class MaterialIn(BaseModel):
+    subject_id: str = ""
+    topic_id: Optional[str] = None
+    title: str = ""
+    description: str = ""
+    file_url: str = ""
+    file_type: str = ""
+    grade: int = 12
+class ForgotIn(BaseModel):
+    email: str = ""
+class ResetPasswordIn(BaseModel):
+    email: str = ""
+    code: str = ""
+    new_password: str = ""
+class ExamInShuffle(BaseModel):
+    shuffle_q: Optional[int] = None
+class NotificationReadIn(BaseModel):
+    id: Optional[int] = None
+class BulkStudentsIn(BaseModel):
+    ids: list = []
+    action: str = ""  # activate | deactivate | delete | set_role
+    role: Optional[str] = None
+class PermUpdateIn(BaseModel):
+    role: str
+    perms: dict = {}  # perm_key -> 0/1
+class RoleIn(BaseModel):
+    role: str = ""
 class StudentIn(BaseModel):
     name: str
     class_name: str = ""
@@ -47,6 +86,7 @@ class TopicIn(BaseModel):
     subject_id: str
     name: str
     grade: int = 12
+    description: str = ""
 class BulkIn(BaseModel):
     items: list
 class ExamIn(BaseModel):
@@ -100,6 +140,7 @@ class AssignmentCreateIn(BaseModel):
     questions: list = []
 class AssignmentSubmitIn(BaseModel):
     answers: list = []
+    files: list = []
 class GradeIn(BaseModel):
     score: float
     feedback: str = ""
@@ -109,5 +150,7 @@ class LessonCreateIn(BaseModel):
     title: str = ""
     content: str = ""
     idx: int = 1
+    required: int = 1
+    advanced: int = 0
 class CompleteIn(BaseModel):
     undo: bool = False

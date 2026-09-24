@@ -1,4 +1,5 @@
 import json
+import random
 from datetime import datetime
 from typing import Optional
 
@@ -43,11 +44,19 @@ def list_exams(request: Request, mode: str = "shared"):
 
 
 @router.get("/api/exams/{eid}")
-def get_exam(eid: int):
+def get_exam(eid: int, shuffle: int = 1):
     r = get_db().q1("SELECT * FROM exams WHERE id=?", (eid,))
     if not r: raise HTTPException(404, "Khong tim thay de")
     try: ids = json.loads(r["question_ids"] or "[]")
     except Exception: ids = []
+    # Tron cau server-side (chong lo de) — moi lan tai lai thu tu khac
+    do_shuffle = 1
+    try:
+        do_shuffle = int(r["shuffle_q"]) if r["shuffle_q"] is not None else 1
+    except Exception:
+        do_shuffle = 1
+    if do_shuffle and shuffle and len(ids) > 1:
+        random.shuffle(ids)
     qs = []
     for qid in ids:
         qr = get_db().q1("SELECT * FROM questions WHERE id=?", (qid,))
@@ -57,7 +66,7 @@ def get_exam(eid: int):
     except Exception:
         duration = None
     return {"id": r["id"], "title": r["title"], "mode": r["mode"],
-            "duration_min": duration, "questions": qs}
+            "duration_min": duration, "questions": qs, "shuffled": bool(do_shuffle and shuffle)}
 
 
 @router.post("/api/exams/{eid}/submit")
@@ -101,7 +110,7 @@ def submit_exam(eid: int, payload: SubmitIn, request: Request):
 @router.get("/api/attempts")
 def attempts(student_name: Optional[str] = None, mode: Optional[str] = None, request: Request = None):
     me = optional_session(request) if request is not None else None
-    is_teacher = bool(me and (me.get("role") or "student") in ("teacher", "admin"))
+    is_teacher = bool(me and (me.get("role") or "student") in ("teacher", "admin", "super_admin"))
     if not me:
         return []
     sql = "SELECT * FROM attempts WHERE 1=1"
@@ -140,7 +149,7 @@ def leaderboard(mode: str = "exam", team: Optional[str] = None, limit: int = 50)
 def stats(student_name: Optional[str] = None, request: Request = None):
     me = optional_session(request) if request is not None else None
     role = (me.get("role") if me else "student") or "student"
-    if me and role not in ("teacher", "admin"):
+    if me and role not in ("teacher", "admin", "super_admin"):
         student_name = me["name"]
     total_q = get_db().count("questions")
     if student_name:

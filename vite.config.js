@@ -29,14 +29,36 @@ export default defineConfig({
       // Bật service worker cả ở dev để test cài PWA qua tunnel ngrok https
       devOptions: { enabled: true, type: 'module' },
       workbox: {
-        // Cache câu hỏi/môn học để vào app nhanh; bài nộp luôn gọi mạng trực tiếp
+        // Offline: app shell + bài học/nội dung học (GET only).
+        // POST submit/draft/grade luôn network — không cache.
         runtimeCaching: [
           {
-            urlPattern: ({ url }) => url.pathname.startsWith('/api/subjects') || url.pathname.startsWith('/api/topics') || url.pathname.startsWith('/api/questions'),
+            // Danh mục học: môn / chuyên đề / câu hỏi / bài học / học liệu / bài tập (GET)
+            urlPattern: ({ url }) =>
+              /^\/(api\/)?(subjects|topics|questions|lessons|materials|assignments)(\/|$)/.test(url.pathname) ||
+              url.pathname.includes('/lessons') ||
+              url.pathname.includes('/materials'),
             handler: 'NetworkFirst',
-            options: { cacheName: 'api-cache', expiration: { maxEntries: 200, maxAgeSeconds: 3600 } }
-          }
-        ]
+            options: {
+              cacheName: 'lessons-cache',
+              expiration: { maxEntries: 400, maxAgeSeconds: 7 * 24 * 3600 },
+              networkTimeoutSeconds: 4,
+            },
+          },
+          {
+            // Progress / stats nhẹ — hiển thị được offline
+            urlPattern: ({ url }) =>
+              url.pathname.includes('/me/progress') ||
+              url.pathname.includes('/stats/overview') ||
+              url.pathname.includes('/notifications'),
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'progress-cache',
+              expiration: { maxEntries: 50, maxAgeSeconds: 24 * 3600 },
+              networkTimeoutSeconds: 4,
+            },
+          },
+        ],
       }
     })
   ],

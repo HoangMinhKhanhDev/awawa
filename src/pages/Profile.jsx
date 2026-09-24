@@ -7,6 +7,7 @@ import {
 import { api, getSession, setSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 import { openInstallSheet } from '../components/InstallPrompt.jsx'
+import { isStaffRole } from '../lib/roles.js'
 
 function fmtDate(d) {
   if (!d) return '—'
@@ -19,6 +20,7 @@ function fmtDay(d) {
 }
 
 function roleLabel(role) {
+  if (role === 'super_admin') return 'Super admin'
   if (role === 'admin') return 'Quản trị'
   return role === 'teacher' ? 'Giáo viên' : 'Học sinh'
 }
@@ -58,7 +60,7 @@ export default function Profile() {
   const [editingEmail, setEditingEmail] = useState(false)
   const [emailDraft, setEmailDraft] = useState('')
 
-  const isTeacher = (student?.role || 'student') === 'teacher' || (student?.role || 'student') === 'admin'
+  const isTeacher = isStaffRole(student?.role || 'student')
   const tabs = isTeacher ? TEACHER_TABS : PROFILE_TABS
 
   useEffect(() => {

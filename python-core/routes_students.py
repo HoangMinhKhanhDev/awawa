@@ -3,10 +3,12 @@ from datetime import datetime
 from fastapi import APIRouter, Request
 from typing import Optional
 
-from auth import (hash_pw, is_admin, is_staff, optional_session,
-                  require_teacher, teacher_coached_team_ids)
+from auth import (hash_pw, has_perm, is_admin, is_staff, is_super_admin,
+                  optional_session, require_admin, require_perm,
+                  require_super_admin, require_teacher, role_of,
+                  teacher_coached_team_ids)
 from deps import get_db
-from models import ActiveIn, ResetIn, StudentIn
+from models import ActiveIn, BulkStudentsIn, PermUpdateIn, ResetIn, RoleIn, StudentIn
 
 router = APIRouter()
 
@@ -31,7 +33,7 @@ def list_students(team: Optional[str] = None, search: Optional[str] = None,
     role = (me.get("role") or "student")
 
     # Học sinh thường: chỉ xem chính mình. Staff mới xem danh sách.
-    if role not in ("teacher", "admin"):
+    if role not in ("teacher", "admin", "super_admin"):
         where.append("s.id=?")
         params.append(me["id"])
     # Teacher chỉ thấy HS trong đội mình phụ trách; admin thấy tất
@@ -165,3 +167,123 @@ def reset_password(sid: int, payload: ResetIn, request: Request):
     get_db().exec("UPDATE students SET password_hash=? WHERE id=?", (hash_pw(payload.password), sid))
     get_db().exec("DELETE FROM sessions WHERE student_id=?", (sid,))
     return {"ok": True}
+
+
+# ---------------- BULK USER (1.15) ----------------
+@router.post("/api/students/bulk")
+def bulk_students(payload: BulkStudentsIn, request: Request):
+    """Khóa/mở/xóa/đổi role hàng loạt. admin = bulk; super_admin thêm set_role."""
+    from fastapi import HTTPException
+    me = optional_session(request)
+    if not me or not has_perm(me, "students.bulk"):
+        raise HTTPException(403, "Ban khong co quyen bulk user.")
+    ids = [int(i) for i in (payload.ids or []) if str(i).isdigit() or isinstance(i, int)]
+    ids = [int(i) for i in ids]
+    if not ids:
+        raise HTTPException(400, "Chua chon tai khoan.")
+    if len(ids) > 200:
+        raise HTTPException(400, "Toi da 200 tai khoan / lan.")
+    action = (payload.action or "").strip()
+    db = get_db()
+    now = datetime.now().isoformat(timespec="seconds")
+    affected = 0
+    skipped = []
+
+    if action == "activate":
+        for sid in ids:
+            if sid == me.get("id"):
+                skipped.append(sid); continue
+            if not db.q1("SELECT 1 FROM students WHERE id=?", (sid,)):
+                skipped.append(sid); continue
+            db.exec("UPDATE students SET active=1 WHERE id=?", (sid,))
+            affected += 1
+    elif action == "deactivate":
+        for sid in ids:
+            if sid == me.get("id"):
+                skipped.append(sid); continue
+            if not db.q1("SELECT 1 FROM students WHERE id=?", (sid,)):
+                skipped.append(sid); continue
+            db.exec("UPDATE students SET active=0 WHERE id=?", (sid,))
+            db.exec("DELETE FROM sessions WHERE student_id=?", (sid,))
+            affected += 1
+    elif action == "delete":
+        if not has_perm(me, "students.delete"):
+            raise HTTPException(403, "Ban khong co quyen xoa.")
+        for sid in ids:
+            if sid == me.get("id"):
+                skipped.append(sid); continue
+            if not db.q1("SELECT 1 FROM students WHERE id=?", (sid,)):
+                skipped.append(sid); continue
+            db.exec("DELETE FROM team_members WHERE user_id=?", (sid,))
+            db.exec("DELETE FROM sessions WHERE student_id=?", (sid,))
+            db.exec("DELETE FROM lesson_completions WHERE student_id=?", (sid,))
+            db.exec("DELETE FROM notifications WHERE user_id=?", (sid,))
+            db.exec("DELETE FROM class_members WHERE user_id=?", (sid,))
+            db.exec("DELETE FROM students WHERE id=?", (sid,))
+            affected += 1
+    elif action == "set_role":
+        if not has_perm(me, "students.role"):
+            raise HTTPException(403, "Chi super admin duoc doi role.")
+        new_role = (payload.role or "").strip()
+        if new_role not in ("student", "teacher", "admin"):
+            raise HTTPException(400, "Role chi hop le: student/teacher/admin.")
+        for sid in ids:
+            if sid == me.get("id"):
+                skipped.append(sid); continue
+            if not db.q1("SELECT 1 FROM students WHERE id=?", (sid,)):
+                skipped.append(sid); continue
+            db.exec("UPDATE students SET role=? WHERE id=?", (new_role, sid))
+            db.exec("DELETE FROM sessions WHERE student_id=?", (sid,))
+            affected += 1
+    else:
+        raise HTTPException(400, f"Action khong ho tro: {action}")
+
+    return {"ok": True, "action": action, "affected": affected, "skipped": skipped, "at": now}
+
+
+# ---------------- PERMISSION MATRIX (1.7) ----------------
+@router.get("/api/permissions")
+def list_permissions(request: Request):
+    """GV/AD đọc perm của chính mình; super_admin đọc full matrix."""
+    me = optional_session(request)
+    if not me:
+        from fastapi import HTTPException
+        raise HTTPException(401, "Chua dang nhap.")
+    db = get_db()
+    r = role_of(me)
+    rows = db.q("SELECT role, perm_key, allowed FROM role_permissions ORDER BY role, perm_key")
+    matrix = {}
+    for row in rows:
+        matrix.setdefault(row["role"], {})[row["perm_key"]] = bool(row["allowed"])
+    my_perms = matrix.get(r, {})
+    return {
+        "my_role": r,
+        "my_perms": my_perms,
+        "can_manage": is_super_admin(me),
+        "matrix": matrix if is_super_admin(me) else {},
+        "roles": ["student", "teacher", "admin", "super_admin"],
+        "perm_keys": sorted({row["perm_key"] for row in rows}),
+    }
+
+
+@router.put("/api/permissions")
+def update_permissions(payload: PermUpdateIn, request: Request):
+    from fastapi import HTTPException
+    require_super_admin(request)
+    role = (payload.role or "").strip()
+    if role not in ("student", "teacher", "admin"):
+        raise HTTPException(400, "Khong duoc sua super_admin.")
+    perms = payload.perms or {}
+    if not isinstance(perms, dict):
+        raise HTTPException(400, "perms phai la object.")
+    db = get_db()
+    changed = 0
+    for key, val in perms.items():
+        key = str(key)[:64]
+        allowed = 1 if val else 0
+        db.exec(
+            """INSERT INTO role_permissions (role, perm_key, allowed) VALUES (?,?,?)
+               ON CONFLICT(role, perm_key) DO UPDATE SET allowed=excluded.allowed""",
+            (role, key, allowed))
+        changed += 1
+    return {"ok": True, "role": role, "changed": changed}

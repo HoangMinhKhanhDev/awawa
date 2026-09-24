@@ -97,24 +97,69 @@ def optional_session(request: Request):
     return d
 def require_teacher(request: Request) -> dict:
     me = optional_session(request)
-    if not me or (me.get("role") or "student") not in ("teacher", "admin"):
+    if not me or (me.get("role") or "student") not in ("teacher", "admin", "super_admin"):
         raise HTTPException(403, "Khu vuc giao vien.")
     return me
 
 
 def require_admin(request: Request) -> dict:
     me = optional_session(request)
-    if not me or (me.get("role") or "student") != "admin":
+    if not me or (me.get("role") or "student") not in ("admin", "super_admin"):
         raise HTTPException(403, "Khu vuc quan tri.")
     return me
 
 
+def require_super_admin(request: Request) -> dict:
+    me = optional_session(request)
+    if not me or (me.get("role") or "student") != "super_admin":
+        raise HTTPException(403, "Chi super admin moi duoc thuc hien.")
+    return me
+
+
 def is_admin(me) -> bool:
-    return bool(me and (me.get("role") or "student") == "admin")
+    return bool(me and (me.get("role") or "student") in ("admin", "super_admin"))
+
+
+def is_super_admin(me) -> bool:
+    return bool(me and (me.get("role") or "student") == "super_admin")
 
 
 def is_staff(me) -> bool:
-    return bool(me and (me.get("role") or "student") in ("teacher", "admin"))
+    return bool(me and (me.get("role") or "student") in ("teacher", "admin", "super_admin"))
+
+
+def role_of(me) -> str:
+    if not me:
+        return "guest"
+    r = me.get("role") or "student"
+    if r not in ("student", "teacher", "admin", "super_admin"):
+        return "student"
+    return r
+
+
+def has_perm(me, perm_key: str) -> bool:
+    """Doc permission matrix theo role — super_admin luon True."""
+    if not me:
+        return False
+    r = role_of(me)
+    if r == "super_admin":
+        return True
+    row = get_db().q1(
+        "SELECT allowed FROM role_permissions WHERE role=? AND perm_key=?",
+        (r, perm_key))
+    if row is None:
+        # Chua seed role nay → fallback theo role mac dinh an toan
+        return r in ("admin", "teacher") and perm_key.endswith((".view", ".read", ".self", ".manage"))
+    return bool(row["allowed"])
+
+
+def require_perm(request: Request, perm_key: str) -> dict:
+    me = optional_session(request)
+    if not me:
+        raise HTTPException(401, "Chua dang nhap.")
+    if not has_perm(me, perm_key):
+        raise HTTPException(403, f"Ban khong co quyen: {perm_key}")
+    return me
 
 
 def teacher_coached_team_ids(user_id: int) -> list:

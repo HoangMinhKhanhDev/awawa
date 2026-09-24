@@ -67,6 +67,11 @@ function topic_map() {
 function row_to_q($r) {
     static $sm = null, $tm = null;
     if ($sm === null) { $sm = subj_map(); $tm = topic_map(); }
+    $tags = array();
+    if (!empty($r['tags'])) {
+        $p = json_decode($r['tags'], true);
+        if (is_array($p)) $tags = $p;
+    }
     return array(
         'id' => (int)$r['id'], 'subject_id' => $r['subject_id'],
         'subject_name' => isset($sm[$r['subject_id']]) ? $sm[$r['subject_id']] : $r['subject_id'],
@@ -78,6 +83,8 @@ function row_to_q($r) {
         'explanation' => $r['explanation'] === null ? '' : $r['explanation'],
         'score' => (float)$r['score'], 'source' => $r['source'] === null ? '' : $r['source'],
         'image_url' => $r['image_url'] === null ? '' : $r['image_url'],
+        'code' => isset($r['code']) && $r['code'] !== null ? $r['code'] : '',
+        'tags' => $tags,
     );
 }
 
@@ -197,8 +204,10 @@ if ($method === 'GET' && $path === '/subjects') {
 if ($path === '/topics') {
     if ($method === 'GET') {
         $sid = $_GET['subject_id'] ?? '';
-        if ($sid !== '') j(q_all('SELECT * FROM topics WHERE subject_id=? ORDER BY name', array($sid)));
-        j(q_all('SELECT * FROM topics ORDER BY name'));
+        $base = 'SELECT t.*, (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id) lesson_count,
+            (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id AND COALESCE(l.required,1)=1) required_count FROM topics t';
+        if ($sid !== '') j(q_all($base . ' WHERE t.subject_id=? ORDER BY t.name', array($sid)));
+        j(q_all($base . ' ORDER BY t.name'));
     }
     if ($method === 'POST') {
         require_teacher();
@@ -209,9 +218,37 @@ if ($path === '/topics') {
         $tid = trim($b['id'] ?? '');
         if ($tid === '') $tid = 't-' . substr(md5(uniqid('', true)), 0, 8);
         if (q_one('SELECT 1 FROM topics WHERE id=?', array($tid))) jerr('Mã chuyên đề đã tồn tại');
-        db()->prepare('INSERT INTO topics (id, subject_id, name, grade) VALUES (?,?,?,?)')
-            ->execute(array($tid, $b['subject_id'], mb_substr($name, 0, 200), (int)($b['grade'] ?? 12)));
+        db()->prepare('INSERT INTO topics (id, subject_id, name, grade, description) VALUES (?,?,?,?,?)')
+            ->execute(array($tid, $b['subject_id'], mb_substr($name, 0, 200), (int)($b['grade'] ?? 12), mb_substr(trim($b['description'] ?? ''), 0, 1000)));
         j(array('id' => $tid));
+    }
+}
+
+if (preg_match('#^/topics/([^/]+)$#', $path, $m)) {
+    $tid = $m[1];
+    if ($method === 'PUT') {
+        require_teacher();
+        $t = q_one('SELECT * FROM topics WHERE id=?', array($tid));
+        if (!$t) jerr('Không tìm thấy chuyên đề', 404);
+        $b = body();
+        $name = trim($b['name'] ?? $t['name']);
+        if ($name === '') $name = $t['name'];
+        $desc = array_key_exists('description', $b) ? mb_substr(trim($b['description']), 0, 1000) : $t['description'];
+        $grade = array_key_exists('grade', $b) && $b['grade'] !== null ? (int)$b['grade'] : (int)$t['grade'];
+        db()->prepare('UPDATE topics SET name=?, description=?, grade=? WHERE id=?')
+            ->execute(array(mb_substr($name, 0, 200), $desc, $grade, $tid));
+        j(array('ok' => true));
+    }
+    if ($method === 'DELETE') {
+        require_teacher();
+        if (!q_one('SELECT 1 FROM topics WHERE id=?', array($tid))) jerr('Không tìm thấy chuyên đề', 404);
+        $lids = q_all('SELECT id FROM lessons WHERE topic_id=?', array($tid));
+        foreach ($lids as $l) {
+            db()->prepare('DELETE FROM lesson_completions WHERE lesson_id=?')->execute(array($l['id']));
+        }
+        db()->prepare('DELETE FROM lessons WHERE topic_id=?')->execute(array($tid));
+        db()->prepare('DELETE FROM topics WHERE id=?')->execute(array($tid));
+        j(array('ok' => true));
     }
 }
 
@@ -225,9 +262,37 @@ if ($method === 'GET' && $path === '/questions') {
     if (!empty($_GET['difficulty'])) { $sql .= ' AND difficulty=?'; $p[] = $_GET['difficulty']; }
     if (!empty($_GET['qtype'])) { $sql .= ' AND qtype=?'; $p[] = $_GET['qtype']; }
     if (!empty($_GET['search'])) { $sql .= ' AND content LIKE ?'; $p[] = '%' . $_GET['search'] . '%'; }
+    if (!empty($_GET['code'])) { $sql .= ' AND code LIKE ?'; $p[] = '%' . $_GET['code'] . '%'; }
+    if (!empty($_GET['tag'])) { $sql .= ' AND tags LIKE ?'; $p[] = '%' . $_GET['tag'] . '%'; }
     $lim = isset($_GET['limit']) ? max(1, min((int)$_GET['limit'], 500)) : 200;
     $sql .= ' ORDER BY id DESC LIMIT ' . $lim;
     j(array_map('row_to_q', q_all($sql, $p)));
+}
+
+if ($method === 'GET' && preg_match('#^/questions/(\d+)$#', $path, $m)) {
+    $r = q_one('SELECT * FROM questions WHERE id=?', array((int)$m[1]));
+    if (!$r) jerr('Không tìm thấy câu hỏi', 404);
+    j(row_to_q($r));
+}
+
+function insert_question_row($b, $source) {
+    $code = mb_substr(trim($b['code'] ?? ''), 0, 64);
+    $tags = json_encode(is_array($b['tags'] ?? null) ? $b['tags'] : array(), JSON_UNESCAPED_UNICODE);
+    db()->prepare('INSERT INTO questions (subject_id, topic_id, grade, difficulty, qtype, content, options, correct_answer, explanation, score, source, image_url, code, tags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        ->execute(array(
+            $b['subject_id'], $b['topic_id'] ?? null, (int)($b['grade'] ?? 12),
+            $b['difficulty'] ?? 'vận dụng', $b['qtype'] ?? 'trac_nghiem', trim($b['content'] ?? ''),
+            json_encode($b['options'] ?? array(), JSON_UNESCAPED_UNICODE),
+            trim($b['correct_answer'] ?? ''), $b['explanation'] ?? '',
+            (float)($b['score'] ?? 1), $source, mb_substr(trim($b['image_url'] ?? ''), 0, 2000),
+            $code, $tags,
+        ));
+    $qid = (int)db()->lastInsertId();
+    if ($code === '') {
+        $code = 'Q' . $qid;
+        db()->prepare('UPDATE questions SET code=? WHERE id=?')->execute(array($code, $qid));
+    }
+    return array($qid, $code);
 }
 
 // ---------------- QUESTION CREATE ----------------
@@ -236,15 +301,26 @@ if ($method === 'POST' && $path === '/questions') {
     $b = body();
     if (empty($b['subject_id']) || trim($b['content'] ?? '') === '') jerr('Thiếu môn hoặc nội dung');
     if (!q_one('SELECT 1 FROM subjects WHERE id=?', array($b['subject_id']))) jerr('Môn không tồn tại');
-    db()->prepare('INSERT INTO questions (subject_id, topic_id, grade, difficulty, qtype, content, options, correct_answer, explanation, score, source, image_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-        ->execute(array(
-            $b['subject_id'], $b['topic_id'] ?? null, (int)($b['grade'] ?? 12),
-            $b['difficulty'] ?? 'vận dụng', $b['qtype'] ?? 'trac_nghiem', trim($b['content']),
-            json_encode($b['options'] ?? array(), JSON_UNESCAPED_UNICODE),
-            trim($b['correct_answer'] ?? ''), $b['explanation'] ?? '',
-            (float)($b['score'] ?? 1), 'thủ công', mb_substr(trim($b['image_url'] ?? ''), 0, 2000),
-        ));
-    j(array('id' => (int)db()->lastInsertId()));
+    $b['source'] = 'thủ công';
+    list($qid, $code) = insert_question_row($b, 'thủ công');
+    j(array('id' => $qid, 'code' => $code));
+}
+
+if ($method === 'POST' && preg_match('#^/questions/(\d+)/duplicate$#', $path, $m)) {
+    require_teacher();
+    $src = q_one('SELECT * FROM questions WHERE id=?', array((int)$m[1]));
+    if (!$src) jerr('Không tìm thấy câu hỏi', 404);
+    $b = array(
+        'subject_id' => $src['subject_id'], 'topic_id' => $src['topic_id'],
+        'grade' => (int)$src['grade'], 'difficulty' => $src['difficulty'],
+        'qtype' => $src['qtype'], 'content' => $src['content'],
+        'options' => json_decode($src['options'] ?: '[]', true),
+        'correct_answer' => $src['correct_answer'], 'explanation' => $src['explanation'],
+        'score' => (float)$src['score'], 'image_url' => $src['image_url'],
+        'code' => '', 'tags' => json_decode($src['tags'] ?: '[]', true),
+    );
+    list($qid, $code) = insert_question_row($b, 'nhân bản');
+    j(array('id' => $qid, 'code' => $code));
 }
 
 // ---------------- QUESTIONS BULK ----------------
@@ -252,17 +328,9 @@ if ($method === 'POST' && $path === '/questions/bulk') {
     require_teacher();
     $b = body();
     $n = 0;
-    $st = db()->prepare('INSERT INTO questions (subject_id, topic_id, grade, difficulty, qtype, content, options, correct_answer, explanation, score, source, image_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
     foreach (($b['items'] ?? array()) as $it) {
         if (trim($it['content'] ?? '') === '' || empty($it['subject_id'])) continue;
-        $st->execute(array(
-            $it['subject_id'], $it['topic_id'] ?? null, (int)($it['grade'] ?? 12),
-            $it['difficulty'] ?? 'vận dụng', $it['qtype'] ?? 'trac_nghiem', trim($it['content']),
-            json_encode($it['options'] ?? array(), JSON_UNESCAPED_UNICODE),
-            trim($it['correct_answer'] ?? ''), $it['explanation'] ?? '',
-            (float)($it['score'] ?? 1), 'nhập đề',
-            is_string($it['image_url'] ?? null) ? mb_substr(trim($it['image_url']), 0, 2000) : '',
-        ));
+        insert_question_row($it, 'nhập đề');
         $n++;
     }
     j(array('inserted' => $n));
@@ -275,13 +343,17 @@ if (preg_match('#^/questions/(\d+)$#', $path, $m)) {
         require_teacher();
         $b = body();
         if (!q_one('SELECT 1 FROM questions WHERE id=?', array($qid))) jerr('Không tìm thấy câu hỏi', 404);
-        db()->prepare('UPDATE questions SET subject_id=?, topic_id=?, grade=?, difficulty=?, qtype=?, content=?, options=?, correct_answer=?, explanation=?, score=?, image_url=? WHERE id=?')
+        $prev = q_one('SELECT code FROM questions WHERE id=?', array($qid));
+        $code = mb_substr(trim($b['code'] ?? ($prev['code'] ?? '')), 0, 64);
+        $tags = json_encode(is_array($b['tags'] ?? null) ? $b['tags'] : array(), JSON_UNESCAPED_UNICODE);
+        db()->prepare('UPDATE questions SET subject_id=?, topic_id=?, grade=?, difficulty=?, qtype=?, content=?, options=?, correct_answer=?, explanation=?, score=?, image_url=?, code=?, tags=? WHERE id=?')
             ->execute(array(
                 $b['subject_id'], $b['topic_id'] ?? null, (int)($b['grade'] ?? 12),
                 $b['difficulty'] ?? 'vận dụng', $b['qtype'] ?? 'trac_nghiem', trim($b['content'] ?? ''),
                 json_encode($b['options'] ?? array(), JSON_UNESCAPED_UNICODE),
                 trim($b['correct_answer'] ?? ''), $b['explanation'] ?? '',
-                (float)($b['score'] ?? 1), mb_substr(trim($b['image_url'] ?? ''), 0, 2000), $qid,
+                (float)($b['score'] ?? 1), mb_substr(trim($b['image_url'] ?? ''), 0, 2000),
+                $code, $tags, $qid,
             ));
         j(array('ok' => true));
     }
@@ -322,6 +394,9 @@ if ($method === 'GET' && preg_match('#^/exams/(\d+)$#', $path, $m)) {
     $ex = q_one('SELECT * FROM exams WHERE id=?', array((int)$m[1]));
     if (!$ex) jerr('Không tìm thấy đề', 404);
     $ids = jlist($ex['question_ids']);
+    $doShuffle = !isset($ex['shuffle_q']) || (int)$ex['shuffle_q'] === 1;
+    $wantShuffle = !isset($_GET['shuffle']) || (int)$_GET['shuffle'] === 1;
+    if ($doShuffle && $wantShuffle && count($ids) > 1) shuffle($ids);
     $qs = array();
     if ($ids) {
         $in = implode(',', array_fill(0, count($ids), '?'));
@@ -330,7 +405,8 @@ if ($method === 'GET' && preg_match('#^/exams/(\d+)$#', $path, $m)) {
         foreach ($ids as $qid) if (isset($byId[$qid])) $qs[] = row_to_q($byId[$qid]);
     }
     j(array('id' => (int)$ex['id'], 'title' => $ex['title'], 'mode' => $ex['mode'],
-        'duration_min' => (int)$ex['duration_min'], 'questions' => $qs));
+        'duration_min' => (int)$ex['duration_min'], 'questions' => $qs,
+        'shuffled' => (bool)($doShuffle && $wantShuffle)));
 }
 
 // ---------------- SUBMIT ----------------
@@ -385,7 +461,7 @@ if ($method === 'POST' && preg_match('#^/exams/(\d+)/submit$#', $path, $m)) {
 // ---------------- ATTEMPTS ----------------
 if ($method === 'GET' && $path === '/attempts') {
     $me = optional_session();
-    $isTeacher = $me && in_array(($me['role'] ?? 'student'), array('teacher', 'admin'), true);
+    $isTeacher = $me && in_array(($me['role'] ?? 'student'), array('teacher', 'admin', 'super_admin'), true);
     if (!$me) j(array());
     $sql = 'SELECT * FROM attempts WHERE 1=1';
     $p = array();
@@ -403,7 +479,7 @@ if ($method === 'GET' && $path === '/stats/leaderboard') {
     $mode = $_GET['mode'] ?? 'exam';
     $team = trim($_GET['team'] ?? '');
     $limit = max(1, min((int)($_GET['limit'] ?? 50), 100));
-    $sql = "SELECT st.id, st.name, st.class_name, st.team, COUNT(a.id) n, MAX(a.accuracy) best, AVG(a.accuracy) avg, MAX(a.created_at) last_at FROM attempts a JOIN students st ON st.id=a.student_id WHERE a.student_id IS NOT NULL AND a.total > 0 AND COALESCE(st.role,'student') NOT IN ('teacher','admin') AND COALESCE(st.active,1)=1";
+    $sql = "SELECT st.id, st.name, st.class_name, st.team, COUNT(a.id) n, MAX(a.accuracy) best, AVG(a.accuracy) avg, MAX(a.created_at) last_at FROM attempts a JOIN students st ON st.id=a.student_id WHERE a.student_id IS NOT NULL AND a.total > 0 AND COALESCE(st.role,'student') NOT IN ('teacher','admin','super_admin') AND COALESCE(st.active,1)=1";
     $p = array();
     if ($mode === 'exam' || $mode === 'practice') { $sql .= ' AND a.mode=?'; $p[] = $mode; }
     if ($team !== '') { $sql .= ' AND st.team=?'; $p[] = $team; }
@@ -423,7 +499,7 @@ if ($method === 'GET' && $path === '/stats/leaderboard') {
 // ---------------- STATS ----------------
 if ($method === 'GET' && $path === '/stats/overview') {
     $me = optional_session();
-    $isTeacher = $me && in_array(($me['role'] ?? 'student'), array('teacher', 'admin'), true);
+    $isTeacher = $me && in_array(($me['role'] ?? 'student'), array('teacher', 'admin', 'super_admin'), true);
     $filter = $_GET['student_name'] ?? '';
     if ($me && !$isTeacher) $filter = $me['name']; // học sinh chỉ xem số của mình
     $totalQ = (int)q_one('SELECT COUNT(*) c FROM questions')['c'];
@@ -515,7 +591,7 @@ if ($path === '/students') {
             $join = " JOIN team_members tm ON tm.user_id=s.id AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='')";
             $sql .= $join . " AND tm.team_id IN ($in)";
             $p = array_merge($p, $tids);
-        } elseif ($role !== 'admin') {
+        } elseif ($role !== 'admin' && $role !== 'super_admin') {
             $sql .= ' AND s.id=?';
             $p[] = (int)$me['id'];
         }
@@ -604,6 +680,96 @@ if (preg_match('#^/students/(\d+)/reset-password$#', $path, $m)) {
     db()->prepare('UPDATE students SET password_hash=? WHERE id=?')->execute(array(password_hash($npw, PASSWORD_DEFAULT), $sid));
     db()->prepare('DELETE FROM sessions WHERE student_id=?')->execute(array($sid));
     j(array('ok' => true));
+}
+
+// ---------------- BULK USER (1.15) ----------------
+if ($path === '/students/bulk' && $method === 'POST') {
+    $me = require_me();
+    if (!has_perm($me, 'students.bulk')) jerr('Bạn không có quyền bulk user.', 403);
+    $b = body();
+    $ids = array();
+    foreach ((array)($b['ids'] ?? array()) as $i) {
+        $i = (int)$i;
+        if ($i > 0) $ids[] = $i;
+    }
+    if (!$ids) jerr('Chưa chọn tài khoản.');
+    if (count($ids) > 200) jerr('Tối đa 200 tài khoản / lần.');
+    $action = trim((string)($b['action'] ?? ''));
+    $affected = 0;
+    $skipped = array();
+    if ($action === 'activate') {
+        foreach ($ids as $sid) {
+            if ($sid === (int)$me['id'] || !q_one('SELECT 1 FROM students WHERE id=?', array($sid))) { $skipped[] = $sid; continue; }
+            db()->prepare('UPDATE students SET active=1 WHERE id=?')->execute(array($sid));
+            $affected++;
+        }
+    } elseif ($action === 'deactivate') {
+        foreach ($ids as $sid) {
+            if ($sid === (int)$me['id'] || !q_one('SELECT 1 FROM students WHERE id=?', array($sid))) { $skipped[] = $sid; continue; }
+            db()->prepare('UPDATE students SET active=0 WHERE id=?')->execute(array($sid));
+            db()->prepare('DELETE FROM sessions WHERE student_id=?')->execute(array($sid));
+            $affected++;
+        }
+    } elseif ($action === 'delete') {
+        if (!has_perm($me, 'students.delete')) jerr('Bạn không có quyền xóa.', 403);
+        foreach ($ids as $sid) {
+            if ($sid === (int)$me['id'] || !q_one('SELECT 1 FROM students WHERE id=?', array($sid))) { $skipped[] = $sid; continue; }
+            foreach (array('team_members', 'sessions', 'lesson_completions', 'notifications', 'class_members') as $t) {
+                db()->prepare("DELETE FROM `$t` WHERE user_id=?")->execute(array($sid));
+            }
+            db()->prepare('DELETE FROM students WHERE id=?')->execute(array($sid));
+            $affected++;
+        }
+    } elseif ($action === 'set_role') {
+        if (!has_perm($me, 'students.role')) jerr('Chỉ super admin được đổi role.', 403);
+        $newRole = trim((string)($b['role'] ?? ''));
+        if (!in_array($newRole, array('student', 'teacher', 'admin'), true)) jerr('Role không hợp lệ.');
+        foreach ($ids as $sid) {
+            if ($sid === (int)$me['id'] || !q_one('SELECT 1 FROM students WHERE id=?', array($sid))) { $skipped[] = $sid; continue; }
+            db()->prepare('UPDATE students SET role=? WHERE id=?')->execute(array($newRole, $sid));
+            db()->prepare('DELETE FROM sessions WHERE student_id=?')->execute(array($sid));
+            $affected++;
+        }
+    } else {
+        jerr('Action không hỗ trợ: ' . $action);
+    }
+    j(array('ok' => true, 'action' => $action, 'affected' => $affected, 'skipped' => $skipped));
+}
+
+// ---------------- PERMISSION MATRIX (1.7) ----------------
+if ($path === '/permissions' && $method === 'GET') {
+    $me = require_me();
+    $r = role_of($me);
+    $matrix = array();
+    $keys = array();
+    foreach (q_all('SELECT role, perm_key, allowed FROM role_permissions ORDER BY role, perm_key') as $row) {
+        $matrix[$row['role']][$row['perm_key']] = ((int)$row['allowed'] === 1);
+        $keys[$row['perm_key']] = true;
+    }
+    j(array(
+        'my_role' => $r,
+        'my_perms' => isset($matrix[$r]) ? $matrix[$r] : array(),
+        'can_manage' => is_super_admin($me),
+        'matrix' => is_super_admin($me) ? $matrix : array(),
+        'roles' => array('student', 'teacher', 'admin', 'super_admin'),
+        'perm_keys' => array_keys($keys),
+    ));
+}
+
+if ($path === '/permissions' && $method === 'PUT') {
+    require_super_admin();
+    $b = body();
+    $role = trim((string)($b['role'] ?? ''));
+    if (!in_array($role, array('student', 'teacher', 'admin'), true)) jerr('Không được sửa super_admin.');
+    $perms = is_array($b['perms'] ?? null) ? $b['perms'] : array();
+    $st = db()->prepare('INSERT INTO role_permissions (role, perm_key, allowed) VALUES (?,?,?)
+        ON DUPLICATE KEY UPDATE allowed=VALUES(allowed)');
+    $n = 0;
+    foreach ($perms as $k => $v) {
+        $st->execute(array($role, mb_substr((string)$k, 0, 64), $v ? 1 : 0));
+        $n++;
+    }
+    j(array('ok' => true, 'role' => $role, 'changed' => $n));
 }
 
 // ---------------- CẤU TRÚC NHÀ TRƯỜNG (Phase 1a) ----------------
@@ -815,17 +981,28 @@ if ($path === '/me/teams') {
         FROM teams t WHERE t.id IN ($in) ORDER BY t.name", $tids));
 }
 
-// ---------------- UPLOAD ẢNH ----------------
+// ---------------- UPLOAD ẢNH + HỌC LIỆU / BÀI TẬP ----------------
 if ($method === 'POST' && $path === '/uploads') {
-    require_teacher();
-    if (empty($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) jerr('Chưa nhận được file ảnh.');
+    $me = optional_session();
+    if (!$me) jerr('Chưa đăng nhập.', 401);
+    $role = $me['role'] ?? 'student';
+    if (empty($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) jerr('Chưa nhận được file.');
     $f = $_FILES['file'];
     $maxBytes = MAX_UPLOAD_MB * 1024 * 1024;
-    if ($f['size'] > $maxBytes) jerr('Ảnh quá lớn (tối đa ' . MAX_UPLOAD_MB . 'MB).');
+    if ($f['size'] > $maxBytes) jerr('File quá lớn (tối đa ' . MAX_UPLOAD_MB . 'MB).');
     $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
-    if (!in_array($ext, array('jpg', 'jpeg', 'png', 'webp', 'gif'))) jerr('Chỉ nhận ảnh jpg/png/webp/gif.');
-    $info = @getimagesize($f['tmp_name']);
-    if ($info === false) jerr('File không phải ảnh hợp lệ.');
+    $imgOk = array('jpg', 'jpeg', 'png', 'webp', 'gif');
+    $docOk = array('pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt', 'zip', 'rar');
+    $isStaff = in_array($role, array('teacher', 'admin'), true);
+    if ($isStaff) {
+        if (!in_array($ext, array_merge($imgOk, $docOk))) jerr('Chỉ nhận ảnh hoặc file tài liệu (pdf/doc/docx/ppt…).');
+    } else {
+        if (!in_array($ext, $docOk)) jerr('Học sinh chỉ nộp file pdf/doc/docx/zip…');
+    }
+    if (in_array($ext, $imgOk, true)) {
+        $info = @getimagesize($f['tmp_name']);
+        if ($info === false) jerr('File không phải ảnh hợp lệ.');
+    }
     $dir = rtrim(UPLOAD_DIR, '/');
     if (!is_dir($dir) && !mkdir($dir, 0755, true)) jerr('Không tạo được thư mục uploads.', 500);
     $safe = preg_replace('/[^\w.\-]/u', '_', $f['name']);
@@ -852,7 +1029,7 @@ function require_me() {
 }
 
 function is_role_teacher($me) {
-    return $me && in_array(($me['role'] ?? 'student'), array('teacher', 'admin'), true);
+    return $me && in_array(($me['role'] ?? 'student'), array('teacher', 'admin', 'super_admin'), true);
 }
 
 function sub_status($sub) {
@@ -860,6 +1037,16 @@ function sub_status($sub) {
     if ($sub['score'] !== null) return 'graded';
     if ($sub['submitted_at'] !== null && $sub['submitted_at'] !== '') return 'submitted';
     return 'draft';
+}
+
+function deadline_passed($deadline) {
+    if ($deadline === null || $deadline === '') return false;
+    // Date-only → so sanh den cuoi ngay
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $deadline)) {
+        return strtotime($deadline . ' 23:59:59') < time();
+    }
+    $t = strtotime($deadline);
+    return $t !== false && $t < time();
 }
 
 // ---------------- CLASSES ----------------
@@ -959,6 +1146,12 @@ if ($path === '/assignments' && $method === 'POST') {
         $n++;
     }
     if ($n === 0) jerr('Cần ít nhất 1 câu hỏi.');
+    try {
+        $dline = $deadline ? ' · hạn ' . $deadline : '';
+        notify_class($classId, 'Giao bài mới: ' . $title,
+            mb_substr(($b['description'] ?? '') !== '' ? $b['description'] : ('Bài tập mới' . $dline), 0, 900),
+            '/assignments/' . $aid);
+    } catch (Exception $e) {}
     j(array('id' => $aid, 'questions' => $n));
 }
 
@@ -970,10 +1163,11 @@ if (preg_match('#^/assignments/(\d+)$#', $path, $m)) {
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
     $teacher = is_role_teacher($me);
     if (!$teacher && !in_array((int)$a['class_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
+    $a['deadline_passed'] = deadline_passed($a['deadline'] ?? null);
     $qs = q_all('SELECT id, idx, content, points' . ($teacher ? ', answer' : '') . ' FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
     $a['questions'] = $qs;
     if (!$teacher) {
-        $sub = q_one('SELECT id, answer, score, feedback, submitted_at, graded_at, question_scores FROM submissions WHERE assignment_id=? AND student_id=?', array($aid, $me['id']));
+        $sub = q_one('SELECT id, answer, score, feedback, submitted_at, graded_at, question_scores, files FROM submissions WHERE assignment_id=? AND student_id=?', array($aid, $me['id']));
         $a['my_submission'] = $sub ? $sub : null;
         $a['status'] = sub_status($sub);
     }
@@ -988,6 +1182,7 @@ if (preg_match('#^/assignments/(\d+)/submit$#', $path, $m)) {
     $a = q_one('SELECT * FROM assignments WHERE id=?', array($aid));
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
     if (!in_array((int)$a['class_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
+    if (deadline_passed($a['deadline'] ?? null)) jerr('Đã qua hạn nộp bài.', 400);
     $existing = q_one('SELECT id, score FROM submissions WHERE assignment_id=? AND student_id=?', array($aid, $me['id']));
     if ($existing && $existing['score'] !== null) jerr('Bài đã chấm, không thể nộp lại.', 400);
     $b = body();
@@ -998,12 +1193,13 @@ if (preg_match('#^/assignments/(\d+)/submit$#', $path, $m)) {
         if ($idx > 0) $map[$idx] = mb_substr(trim($x['text'] ?? ''), 0, 4000);
     }
     $payload = json_encode($map, JSON_UNESCAPED_UNICODE);
+    $files = json_encode(array_slice(array_map(function ($f) { return mb_substr((string)$f, 0, 500); }, is_array($b['files'] ?? null) ? $b['files'] : array()), 0, 10), JSON_UNESCAPED_UNICODE);
     if ($existing) {
-        db()->prepare('UPDATE submissions SET answer=?, submitted_at=NOW(), question_scores=NULL, score=NULL, feedback=NULL, graded_at=NULL WHERE id=?')->execute(array($payload, $existing['id']));
+        db()->prepare('UPDATE submissions SET answer=?, files=?, submitted_at=NOW(), question_scores=NULL, score=NULL, feedback=NULL, graded_at=NULL WHERE id=?')->execute(array($payload, $files, $existing['id']));
         $sid = (int)$existing['id'];
     } else {
-        db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, submitted_at) VALUES (?,?,?,NOW())')
-            ->execute(array($aid, $me['id'], $payload));
+        db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, files, submitted_at) VALUES (?,?,?,?,NOW())')
+            ->execute(array($aid, $me['id'], $payload, $files));
         $sid = (int)db()->lastInsertId();
     }
     j(array('id' => $sid, 'status' => 'submitted'));
@@ -1028,13 +1224,14 @@ if (preg_match('#^/assignments/(\d+)/draft$#', $path, $m)) {
         if ($idx > 0) $map[$idx] = mb_substr(trim($x['text'] ?? ''), 0, 4000);
     }
     $payload = json_encode($map, JSON_UNESCAPED_UNICODE);
+    $files = json_encode(array_slice(array_map(function ($f) { return mb_substr((string)$f, 0, 500); }, is_array($b['files'] ?? null) ? $b['files'] : array()), 0, 10), JSON_UNESCAPED_UNICODE);
     if ($existing) {
         // khong dong thoi nop: neu chua nop thi van la draft
-        db()->prepare('UPDATE submissions SET answer=? WHERE id=?')->execute(array($payload, $existing['id']));
+        db()->prepare('UPDATE submissions SET answer=?, files=? WHERE id=?')->execute(array($payload, $files, $existing['id']));
         $sid = (int)$existing['id'];
     } else {
-        db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, submitted_at) VALUES (?,?,?,NULL)')
-            ->execute(array($aid, $me['id'], $payload));
+        db()->prepare('INSERT INTO submissions (assignment_id, student_id, answer, files, submitted_at) VALUES (?,?,?,?,NULL)')
+            ->execute(array($aid, $me['id'], $payload, $files));
         $sid = (int)db()->lastInsertId();
     }
     j(array('id' => $sid, 'status' => 'draft'));
@@ -1047,7 +1244,7 @@ if (preg_match('#^/assignments/(\d+)/submissions$#', $path, $m)) {
     $aid = (int)$m[1];
     $a = q_one('SELECT * FROM assignments WHERE id=?', array($aid));
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
-    $rows = q_all('SELECT s.id sid, s.name, s.class_name, sub.id sub_id, sub.answer, sub.score, sub.feedback, sub.submitted_at, sub.graded_at, sub.question_scores
+    $rows = q_all('SELECT s.id sid, s.name, s.class_name, sub.id sub_id, sub.answer, sub.score, sub.feedback, sub.submitted_at, sub.graded_at, sub.question_scores, sub.files
         FROM class_members cm JOIN students s ON s.id=cm.user_id
         LEFT JOIN submissions sub ON sub.assignment_id=? AND sub.student_id=s.id
         WHERE cm.class_id=? ORDER BY s.name', array($aid, $a['class_id']));
@@ -1056,12 +1253,15 @@ if (preg_match('#^/assignments/(\d+)/submissions$#', $path, $m)) {
     foreach ($rows as $r) {
         $ans = json_decode($r['answer'] ?? 'null', true);
         $qscores = json_decode($r['question_scores'] ?? 'null', true);
+        $files = json_decode($r['files'] ?? '[]', true);
+        if (!is_array($files)) $files = array();
         $out[] = array(
             'submission_id' => $r['sub_id'] !== null ? (int)$r['sub_id'] : null,
             'student_id' => (int)$r['sid'], 'name' => $r['name'], 'class_name' => $r['class_name'],
             'score' => $r['score'] !== null ? (float)$r['score'] : null,
             'feedback' => $r['feedback'], 'submitted_at' => $r['submitted_at'],
             'graded_at' => $r['graded_at'], 'question_scores' => $qscores,
+            'files' => $files,
             'status' => sub_status($r['sub_id'] === null ? null : $r),
             'answers' => $ans,
         );
@@ -1082,9 +1282,26 @@ if (preg_match('#^/submissions/(\d+)/grade$#', $path, $m)) {
     $score = max(0, min(10, (float)$score));
     $qsc = is_array($b['question_scores'] ?? null) ? $b['question_scores'] : null;
     $qscJson = $qsc !== null ? json_encode($qsc, JSON_UNESCAPED_UNICODE) : null;
+    // Lịch sử sửa điểm (3.7)
+    db()->prepare('INSERT INTO grade_history (submission_id, score, feedback, question_scores, graded_by, graded_at) VALUES (?,?,?,?,?,?)')
+        ->execute(array($sid, $sub['score'], $sub['feedback'] ?? '', $sub['question_scores'], $me['id'], $sub['graded_at']));
     db()->prepare('UPDATE submissions SET score=?, feedback=?, question_scores=?, graded_at=NOW() WHERE id=?')
         ->execute(array($score, mb_substr(trim($b['feedback'] ?? ''), 0, 1000), $qscJson, $sid));
     j(array('ok' => true, 'score' => $score));
+}
+
+if (preg_match('#^/submissions/(\d+)/grade-history$#', $path, $m)) {
+    if ($method !== 'GET') jerr('Không hỗ trợ.', 405);
+    require_teacher();
+    $rows = q_all('SELECT g.id, g.score, g.feedback, g.question_scores, g.graded_at, s.name grader_name
+        FROM grade_history g LEFT JOIN students s ON s.id=g.graded_by
+        WHERE g.submission_id=? ORDER BY g.id DESC LIMIT 50', array((int)$m[1]));
+    foreach ($rows as &$r) {
+        $r['id'] = (int)$r['id'];
+        $r['score'] = $r['score'] !== null ? (float)$r['score'] : null;
+        $r['question_scores'] = json_decode($r['question_scores'] ?? 'null', true);
+    }
+    j($rows);
 }
 
 // ---------------- ME: RESULTS + PROGRESS ----------------
@@ -1139,26 +1356,39 @@ if ($path === '/me/progress' && $method === 'GET') {
         $latestTitle = $ltRow['title'] ?? null;
     }
 
-    // Bai hoc: tong + da hoan thanh + tien do theo chuyen de
+    // Bai hoc: tong + da hoan thanh + tien do theo chuyen de (chi tinh bai bat buoc)
     $lessonsTotal = (int)q_one('SELECT COUNT(*) c FROM lessons')['c'];
     $lessonsDone = (int)q_one('SELECT COUNT(*) c FROM lesson_completions WHERE student_id=?', array($me['id']))['c'];
     $topicRows = q_all('SELECT t.id, t.name,
+        (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id AND COALESCE(l.required,1)=1) req_total,
+        (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id AND COALESCE(l.required,1)=1) req_done,
         (SELECT COUNT(*) FROM lessons l WHERE l.topic_id=t.id) lt,
         (SELECT COUNT(*) FROM lessons l JOIN lesson_completions lc ON lc.lesson_id=l.id AND lc.student_id=? WHERE l.topic_id=t.id) ld
-        FROM topics t WHERE (SELECT COUNT(*) FROM lessons l2 WHERE l2.topic_id=t.id) > 0', array($me['id']));
+        FROM topics t WHERE (SELECT COUNT(*) FROM lessons l2 WHERE l2.topic_id=t.id) > 0', array($me['id'], $me['id']));
     $topicsDone = 0; $topicsWithLessons = 0;
     $currentTopic = null;
     foreach ($topicRows as $t) {
         $topicsWithLessons++;
-        if ((int)$t['lt'] === (int)$t['ld']) $topicsDone++;
-        elseif ($currentTopic === null && (int)$t['ld'] < (int)$t['lt']) {
-            $currentTopic = array('id' => $t['id'], 'name' => $t['name'], 'done' => (int)$t['ld'], 'total' => (int)$t['lt']);
+        $rt = (int)$t['req_total']; $rd = (int)$t['req_done'];
+        if ($rt > 0 && $rd >= $rt) $topicsDone++;
+        elseif ($currentTopic === null && $rd < $rt) {
+            $currentTopic = array('id' => $t['id'], 'name' => $t['name'], 'done' => $rd, 'total' => $rt);
         }
     }
     $lessonRatio = $lessonsTotal ? round($lessonsDone / $lessonsTotal, 3) : 0;
     $assignRatio = $assigned ? round($completed / $assigned, 3) : 0;
     // 72% cuoi cung: tron lesson + assignment (neu chua co bai hoc chi dung assignment)
     $overall = $lessonsTotal > 0 ? round(0.5 * $lessonRatio + 0.5 * $assignRatio, 3) : $assignRatio;
+
+    // Timeline diem theo ngay (4.2)
+    $timeline = q_all('SELECT DATE(COALESCE(graded_at, submitted_at)) day, AVG(score) avg_score, COUNT(*) n
+        FROM submissions WHERE student_id=? AND score IS NOT NULL
+        GROUP BY day ORDER BY day DESC LIMIT 90', array($me['id']));
+    foreach ($timeline as &$tl) {
+        $tl['avg_score'] = $tl['avg_score'] !== null ? round((float)$tl['avg_score'], 1) : null;
+        $tl['n'] = (int)$tl['n'];
+    }
+    unset($tl);
 
     j(array(
         'assigned' => $assigned,
@@ -1175,6 +1405,7 @@ if ($path === '/me/progress' && $method === 'GET') {
         'topics_done' => $topicsDone,
         'topics_total' => $topicsWithLessons,
         'current_topic' => $currentTopic,
+        'timeline' => $timeline,
     ));
 }
 
@@ -1183,12 +1414,29 @@ if ($path === '/lessons' && $method === 'GET') {
     $me = require_me();
     $topicId = trim($_GET['topic_id'] ?? '');
     if ($topicId === '') jerr('Thiếu topic_id.');
-    $rows = q_all('SELECT l.id, l.topic_id, l.title, l.content, l.idx, t.name topic_name,
+    $rows = q_all('SELECT l.id, l.topic_id, l.title, l.content, l.idx,
+        COALESCE(l.required,1) required, COALESCE(l.advanced,0) advanced, t.name topic_name,
         (SELECT 1 FROM lesson_completions lc WHERE lc.lesson_id=l.id AND lc.student_id=?) completed
-        FROM lessons l JOIN topics t ON t.id=l.topic_id WHERE l.topic_id=? ORDER BY l.idx', array($me['id'], $topicId));
-    foreach ($rows as &$r) $r['completed'] = $r['completed'] ? true : false;
-    unset($r);
-    j($rows);
+        FROM lessons l JOIN topics t ON t.id=l.topic_id WHERE l.topic_id=? ORDER BY l.idx, l.id',
+        array($me['id'], $topicId));
+    $lessons = array();
+    $reqTotal = 0; $reqDone = 0;
+    foreach ($rows as $r) {
+        $r['completed'] = $r['completed'] ? true : false;
+        $r['required'] = $r['required'] ? true : false;
+        $r['advanced'] = $r['advanced'] ? true : false;
+        if ($r['required']) {
+            $reqTotal++;
+            if ($r['completed']) $reqDone++;
+        }
+        $lessons[] = $r;
+    }
+    j(array(
+        'lessons' => $lessons,
+        'required_total' => $reqTotal,
+        'required_done' => $reqDone,
+        'topic_complete' => $reqTotal > 0 && $reqDone === $reqTotal,
+    ));
 }
 
 if ($path === '/lessons' && $method === 'POST') {
@@ -1200,9 +1448,56 @@ if ($path === '/lessons' && $method === 'POST') {
     if ($topicId === '' || $title === '') jerr('Thiếu chủ đề hoặc tiêu đề.');
     if (!q_one('SELECT 1 FROM topics WHERE id=?', array($topicId))) jerr('Chuyên đề không tồn tại.');
     $idx = max(1, (int)($b['idx'] ?? 1));
-    db()->prepare('INSERT INTO lessons (topic_id, title, content, idx) VALUES (?,?,?,?)')
-        ->execute(array($topicId, $title, (string)($b['content'] ?? ''), $idx));
+    $req = empty($b['required']) ? 0 : 1;
+    $adv = empty($b['advanced']) ? 0 : 1;
+    db()->prepare('INSERT INTO lessons (topic_id, title, content, idx, required, advanced) VALUES (?,?,?,?,?,?)')
+        ->execute(array($topicId, $title, (string)($b['content'] ?? ''), $idx, $req, $adv));
     j(array('id' => (int)db()->lastInsertId()));
+}
+
+if (preg_match('#^/lessons/(\d+)$#', $path, $m)) {
+    $lid = (int)$m[1];
+    if ($method === 'PUT') {
+        require_teacher();
+        $l = q_one('SELECT * FROM lessons WHERE id=?', array($lid));
+        if (!$l) jerr('Không tìm thấy bài học.', 404);
+        $b = body();
+        $title = trim($b['title'] ?? $l['title']);
+        if ($title === '') $title = $l['title'];
+        $content = array_key_exists('content', $b) ? (string)$b['content'] : $l['content'];
+        $idx = array_key_exists('idx', $b) && $b['idx'] !== null ? max(1, (int)$b['idx']) : (int)$l['idx'];
+        $req = array_key_exists('required', $b) && $b['required'] !== null ? (empty($b['required']) ? 0 : 1) : (int)($l['required'] ?? 1);
+        $adv = array_key_exists('advanced', $b) && $b['advanced'] !== null ? (empty($b['advanced']) ? 0 : 1) : (int)($l['advanced'] ?? 0);
+        db()->prepare('UPDATE lessons SET title=?, content=?, idx=?, required=?, advanced=? WHERE id=?')
+            ->execute(array(mb_substr($title, 0, 255), $content, $idx, $req, $adv, $lid));
+        j(array('ok' => true));
+    }
+    if ($method === 'DELETE') {
+        require_teacher();
+        db()->prepare('DELETE FROM lesson_completions WHERE lesson_id=?')->execute(array($lid));
+        db()->prepare('DELETE FROM lessons WHERE id=?')->execute(array($lid));
+        j(array('ok' => true));
+    }
+}
+
+if (preg_match('#^/lessons/(\d+)/move$#', $path, $m) && $method === 'POST') {
+    require_teacher();
+    $lid = (int)$m[1];
+    $l = q_one('SELECT * FROM lessons WHERE id=?', array($lid));
+    if (!$l) jerr('Không tìm thấy bài học.', 404);
+    $dir = (($_GET['direction'] ?? 'up') === 'down') ? 'ASC' : 'DESC';
+    $nb = q_one("SELECT * FROM lessons WHERE topic_id=? AND id<>? ORDER BY idx $dir, id $dir LIMIT 1",
+        array($l['topic_id'], $lid));
+    if (!$nb) j(array('ok' => true, 'moved' => false));
+    db()->prepare('UPDATE lessons SET idx=? WHERE id=?')->execute(array($nb['idx'], $lid));
+    db()->prepare('UPDATE lessons SET idx=? WHERE id=?')->execute(array($l['idx'], $nb['id']));
+    $rows = q_all('SELECT id FROM lessons WHERE topic_id=? ORDER BY idx, id', array($l['topic_id']));
+    $i = 1;
+    foreach ($rows as $r) {
+        db()->prepare('UPDATE lessons SET idx=? WHERE id=?')->execute(array($i, $r['id']));
+        $i++;
+    }
+    j(array('ok' => true, 'moved' => true));
 }
 
 if (preg_match('#^/lessons/(\d+)/complete$#', $path, $m)) {
@@ -1224,7 +1519,7 @@ if (preg_match('#^/lessons/(\d+)/complete$#', $path, $m)) {
 if ($path === '/stats/class-overview' && $method === 'GET') {
     $me = require_me();
     if (!is_role_teacher($me)) jerr('Khu vực giáo viên.', 403);
-    $students = (int)q_one("SELECT COUNT(*) c FROM students WHERE COALESCE(role,'student') NOT IN ('teacher','admin')")['c'];
+    $students = (int)q_one("SELECT COUNT(*) c FROM students WHERE COALESCE(role,'student') NOT IN ('teacher','admin','super_admin')")['c'];
     $active = (int)q_one('SELECT COUNT(*) c FROM assignments WHERE deadline IS NULL OR deadline >= CURDATE()')['c'];
     $ungraded = (int)q_one('SELECT COUNT(*) c FROM submissions WHERE score IS NULL AND submitted_at IS NOT NULL')['c'];
 
@@ -1258,6 +1553,140 @@ if ($path === '/stats/class-overview' && $method === 'GET') {
         'recent_assignments' => $recent,
         'topic_progress' => $topicProgress,
     ));
+}
+
+// ---------------- MATERIALS ----------------
+if ($path === '/materials') {
+    if ($method === 'GET') {
+        $sql = 'SELECT * FROM materials WHERE 1=1';
+        $p = array();
+        if (!empty($_GET['subject_id'])) { $sql .= ' AND subject_id=?'; $p[] = $_GET['subject_id']; }
+        if (!empty($_GET['topic_id'])) { $sql .= ' AND topic_id=?'; $p[] = $_GET['topic_id']; }
+        $sql .= ' ORDER BY id DESC LIMIT 200';
+        j(q_all($sql, $p));
+    }
+    if ($method === 'POST') {
+        $me = require_teacher();
+        $b = body();
+        if (trim($b['title'] ?? '') === '') jerr('Thiếu tên tài liệu');
+        db()->prepare('INSERT INTO materials (subject_id, topic_id, title, description, file_url, file_type, grade, created_by) VALUES (?,?,?,?,?,?,?,?)')
+            ->execute(array(
+                !empty($b['subject_id']) ? $b['subject_id'] : null,
+                !empty($b['topic_id']) ? $b['topic_id'] : null,
+                mb_substr(trim($b['title']), 0, 255),
+                mb_substr(trim($b['description'] ?? ''), 0, 2000),
+                mb_substr(trim($b['file_url'] ?? ''), 0, 2000),
+                mb_substr(trim($b['file_type'] ?? ''), 0, 32),
+                (int)($b['grade'] ?? 12), $me['id'],
+            ));
+        j(array('id' => (int)db()->lastInsertId()));
+    }
+}
+
+if (preg_match('#^/materials/(\d+)$#', $path, $m) && $method === 'DELETE') {
+    require_teacher();
+    db()->prepare('DELETE FROM materials WHERE id=?')->execute(array((int)$m[1]));
+    j(array('ok' => true));
+}
+
+// ---------------- NOTIFICATIONS ----------------
+if ($path === '/notifications' && $method === 'GET') {
+    $me = require_me();
+    $unreadOnly = !empty($_GET['unread_only']);
+    $sql = 'SELECT * FROM notifications WHERE user_id=?';
+    $p = array($me['id']);
+    if ($unreadOnly) $sql .= ' AND read_at IS NULL';
+    $sql .= ' ORDER BY id DESC LIMIT 50';
+    $items = q_all($sql, $p);
+    $unread = (int)q_one('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read_at IS NULL', array($me['id']))['c'];
+    foreach ($items as &$it) $it['id'] = (int)$it['id'];
+    j(array('items' => $items, 'unread' => $unread));
+}
+
+if ($path === '/notifications/read' && $method === 'POST') {
+    $me = require_me();
+    $b = body();
+    if (!empty($b['id'])) {
+        db()->prepare('UPDATE notifications SET read_at=NOW() WHERE id=? AND user_id=?')->execute(array((int)$b['id'], $me['id']));
+    } else {
+        db()->prepare('UPDATE notifications SET read_at=NOW() WHERE user_id=? AND read_at IS NULL')->execute(array($me['id']));
+    }
+    j(array('ok' => true));
+}
+
+function notify_class($class_id, $title, $bodyTxt, $link) {
+    $members = q_all('SELECT user_id FROM class_members WHERE class_id=?', array($class_id));
+    $st = db()->prepare('INSERT INTO notifications (user_id, title, body, link) VALUES (?,?,?,?)');
+    foreach ($members as $m) {
+        $st->execute(array($m['user_id'], mb_substr($title, 0, 255), mb_substr($bodyTxt, 0, 1000), mb_substr($link, 0, 500)));
+    }
+}
+
+// ---------------- FORGOT / RESET PASSWORD (SMTP) ----------------
+if ($path === '/auth/forgot-password' && $method === 'POST') {
+    $b = body();
+    $email = strtolower(trim($b['email'] ?? ''));
+    if ($email === '' || strpos($email, '@') === false) jerr('Nhập email hợp lệ.');
+    $st = q_one('SELECT id, email FROM students WHERE LOWER(email)=?', array($email));
+    if (!$st) j(array('ok' => true, 'sent' => false, 'message' => 'Nếu email tồn tại, chúng tôi đã gửi mã.'));
+    $code = strtoupper(substr(bin2hex(random_bytes(4)), 0, 6));
+    db()->prepare('INSERT INTO password_resets (student_id, code, expires_at) VALUES (?,?,DATE_ADD(NOW(), INTERVAL 15 MINUTE))')
+        ->execute(array($st['id'], $code));
+    $smtpHost = envv('SMTP_HOST', '');
+    $sent = false;
+    if ($smtpHost !== '' && function_exists('mail')) {
+        $subj = '[OnLuyen HSG] Ma dat lai mat khau';
+        $msg = "Ma dat lai mat khau cua ban la: $code\r\nMa co hieu luc 15 phut.";
+        $headers = 'From: ' . envv('SMTP_FROM', envv('SMTP_USER', 'no-reply@localhost')) . "\r\n" .
+            'Content-Type: text/plain; charset=utf-8';
+        $sent = @mail($st['email'], $subj, $msg, $headers);
+    }
+    j(array('ok' => true, 'sent' => (bool)$sent,
+        'message' => $sent ? 'Đã gửi mã qua email.' : 'Chưa cấu hình SMTP — liên hệ giáo viên đặt lại mật khẩu.'));
+}
+
+if ($path === '/auth/reset-password' && $method === 'POST') {
+    $b = body();
+    $email = strtolower(trim($b['email'] ?? ''));
+    $code = strtoupper(trim($b['code'] ?? ''));
+    $npw = (string)($b['new_password'] ?? '');
+    if (mb_strlen($npw) < 6) jerr('Mật khẩu mới ít nhất 6 ký tự.');
+    $st = q_one('SELECT id FROM students WHERE LOWER(email)=?', array($email));
+    if (!$st || $code === '') jerr('Mã không đúng hoặc hết hạn.');
+    $row = q_one('SELECT * FROM password_resets WHERE student_id=? AND code=? AND used_at IS NULL ORDER BY id DESC LIMIT 1',
+        array($st['id'], $code));
+    if (!$row) jerr('Mã không đúng hoặc đã dùng.');
+    if (strtotime($row['expires_at']) < time()) jerr('Mã đã hết hạn.');
+    db()->prepare('UPDATE password_resets SET used_at=NOW() WHERE id=?')->execute(array($row['id']));
+    db()->prepare('UPDATE students SET password_hash=? WHERE id=?')->execute(array(password_hash($npw, PASSWORD_DEFAULT), $st['id']));
+    db()->prepare('DELETE FROM sessions WHERE student_id=?')->execute(array($st['id']));
+    j(array('ok' => true));
+}
+
+// ---------------- TEAM TIMELINE (4.2) ----------------
+if ($path === '/stats/team-timeline' && $method === 'GET') {
+    require_teacher();
+    $days = max(7, min((int)($_GET['days'] ?? 30), 180));
+    $team = trim($_GET['team'] ?? '');
+    $sql = "SELECT DATE(a.created_at) day, COUNT(*) n, AVG(a.accuracy) avg_acc, SUM(a.correct) c, SUM(a.total) t
+            FROM attempts a JOIN students st ON st.id=a.student_id
+            WHERE a.student_id IS NOT NULL AND a.created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)";
+    $p = array($days);
+    if ($team !== '') { $sql .= ' AND st.team=?'; $p[] = $team; }
+    $sql .= ' GROUP BY day ORDER BY day';
+    $attempts = q_all($sql, $p);
+    $gsql = "SELECT DATE(sub.graded_at) day, AVG(sub.score) avg_score, COUNT(*) n
+             FROM submissions sub JOIN students st ON st.id=sub.student_id
+             WHERE sub.score IS NOT NULL AND sub.graded_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)";
+    $gp = array($days);
+    if ($team !== '') { $gsql .= ' AND st.team=?'; $gp[] = $team; }
+    $gsql .= ' GROUP BY day ORDER BY day';
+    $graded = q_all($gsql, $gp);
+    foreach ($attempts as &$a) { $a['avg_acc'] = $a['avg_acc'] !== null ? (float)$a['avg_acc'] : 0; $a['n'] = (int)$a['n']; }
+    unset($a);
+    foreach ($graded as &$g) { $g['avg_score'] = $g['avg_score'] !== null ? (float)$g['avg_score'] : null; $g['n'] = (int)$g['n']; }
+    unset($g);
+    j(array('days' => $days, 'team' => $team, 'attempts' => $attempts, 'graded' => $graded));
 }
 
 jerr('Không tìm thấy API: ' . $path, 404);

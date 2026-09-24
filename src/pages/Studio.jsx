@@ -7,6 +7,7 @@ import {
 import { api, getSession } from '../api.js'
 import { parseTextToDrafts } from '../lib/parseImport.js'
 import { useUI } from '../components/ui.jsx'
+import { isStaffRole } from '../lib/roles.js'
 
 const optsOf = (q) => { try { const p = JSON.parse(q.options || '[]'); return Array.isArray(p) ? p : [] } catch { return [] } }
 
@@ -19,7 +20,7 @@ const STEPS = [
 
 export default function Studio() {
   const rawRole = getSession().student?.role || 'student'
-  const isStaff = rawRole === 'teacher' || rawRole === 'admin'
+  const isStaff = isStaffRole(rawRole)
   const [step, setStep] = useState('import')
   const nav = useNavigate()
 

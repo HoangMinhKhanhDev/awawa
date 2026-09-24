@@ -139,26 +139,62 @@ function optional_session() {
     return public_student($s);
 }
 
-// Chặn khu giáo viên: teacher hoặc admin.
+// Chặn khu giáo viên: teacher, admin hoặc super_admin.
 function require_teacher() {
     $me = optional_session();
     $role = $me ? ($me['role'] ?? 'student') : '';
-    if (!$me || ($role !== 'teacher' && $role !== 'admin')) jerr('Khu vực giáo viên.', 403);
+    if (!$me || !in_array($role, array('teacher', 'admin', 'super_admin'), true)) jerr('Khu vực giáo viên.', 403);
     return $me;
 }
 
 function require_admin() {
     $me = optional_session();
-    if (!$me || ($me['role'] ?? 'student') !== 'admin') jerr('Khu vực quản trị.', 403);
+    $role = $me ? ($me['role'] ?? 'student') : '';
+    if (!$me || !in_array($role, array('admin', 'super_admin'), true)) jerr('Khu vực quản trị.', 403);
+    return $me;
+}
+
+function require_super_admin() {
+    $me = optional_session();
+    if (!$me || ($me['role'] ?? 'student') !== 'super_admin') jerr('Chỉ super admin.', 403);
     return $me;
 }
 
 function is_admin($me) {
-    return $me && (($me['role'] ?? 'student') === 'admin');
+    return $me && in_array(($me['role'] ?? 'student'), array('admin', 'super_admin'), true);
+}
+
+function is_super_admin($me) {
+    return $me && (($me['role'] ?? 'student') === 'super_admin');
 }
 
 function is_staff($me) {
-    return $me && in_array(($me['role'] ?? 'student'), array('teacher', 'admin'), true);
+    return $me && in_array(($me['role'] ?? 'student'), array('teacher', 'admin', 'super_admin'), true);
+}
+
+function role_of($me) {
+    if (!$me) return 'guest';
+    $r = $me['role'] ?? 'student';
+    return in_array($r, array('student', 'teacher', 'admin', 'super_admin'), true) ? $r : 'student';
+}
+
+function has_perm($me, $perm_key) {
+    if (!$me) return false;
+    $r = role_of($me);
+    if ($r === 'super_admin') return true;
+    $row = q_one('SELECT allowed FROM role_permissions WHERE role=? AND perm_key=?', array($r, $perm_key));
+    if (!$row) {
+        return is_staff($me) && (substr($perm_key, -5) === 'view' || substr($perm_key, -4) === 'read'
+            || substr($perm_key, -4) === 'self' || substr($perm_key, -7) === 'manage');
+    }
+    return (int)$row['allowed'] === 1;
+}
+
+function require_perm($perm_key) {
+    $me = optional_session();
+    if (!$me) jerr('Chưa đăng nhập.', 401);
+    if (!has_perm($me, $perm_key)) jerr('Bạn không có quyền: ' . $perm_key, 403);
+    return $me;
 }
 
 function teacher_coached_team_ids($user_id) {
@@ -216,7 +252,133 @@ function ensure_school_schema() {
         if (!in_array('active', $cols, true)) {
             db()->exec("ALTER TABLE students ADD COLUMN active TINYINT DEFAULT 1");
         }
+        ensure_gd_schema();
     } catch (Exception $e) {
         // bỏ qua nếu DB chưa cấu hình — health sẽ báo
+    }
+}
+
+// Tự thêm cột/bảng cho Giai đoạn 2–5 (safe chạy nhiều lần).
+function ensure_gd_schema() {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    $addCol = function ($table, $col, $ddl) {
+        foreach (q_all("SHOW COLUMNS FROM `$table`") as $c) {
+            if ($c['Field'] === $col) return;
+        }
+        db()->exec("ALTER TABLE `$table` ADD COLUMN `$col` $ddl");
+    };
+    $addCol('questions', 'code', "VARCHAR(64) DEFAULT ''");
+    $addCol('questions', 'tags', 'TEXT NULL');
+    $addCol('lessons', 'required', 'TINYINT DEFAULT 1');
+    $addCol('lessons', 'advanced', 'TINYINT DEFAULT 0');
+    $addCol('submissions', 'files', 'TEXT NULL');
+    $addCol('exams', 'shuffle_q', 'TINYINT DEFAULT 1');
+    db()->exec("CREATE TABLE IF NOT EXISTS grade_history (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        submission_id INT NOT NULL,
+        score FLOAT NULL,
+        feedback TEXT DEFAULT '',
+        question_scores MEDIUMTEXT NULL,
+        graded_by INT NULL,
+        graded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_gh_sub (submission_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    db()->exec("CREATE TABLE IF NOT EXISTS materials (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        subject_id VARCHAR(64) NULL,
+        topic_id VARCHAR(64) NULL,
+        title VARCHAR(255) NOT NULL,
+        description TEXT DEFAULT '',
+        file_url VARCHAR(2000) DEFAULT '',
+        file_type VARCHAR(32) DEFAULT '',
+        grade INT DEFAULT 12,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_mat_subject (subject_id),
+        INDEX idx_mat_topic (topic_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    db()->exec("CREATE TABLE IF NOT EXISTS notifications (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NULL,
+        title VARCHAR(255) NOT NULL,
+        body TEXT DEFAULT '',
+        link VARCHAR(500) DEFAULT '',
+        read_at DATETIME NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_n_user (user_id),
+        INDEX idx_n_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    db()->exec("CREATE TABLE IF NOT EXISTS password_resets (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        student_id INT NOT NULL,
+        code VARCHAR(16) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        used_at DATETIME NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_pr_student (student_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    db()->exec("CREATE TABLE IF NOT EXISTS role_permissions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        role VARCHAR(32) NOT NULL,
+        perm_key VARCHAR(64) NOT NULL,
+        allowed TINYINT DEFAULT 0,
+        UNIQUE KEY uq_rp (role, perm_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    seed_role_permissions();
+}
+
+function default_role_perms() {
+    return array(
+        'student' => array(
+            'practice' => 1, 'exam' => 1, 'assignments.submit' => 1,
+            'lessons.read' => 1, 'materials.read' => 1, 'progress.self' => 1,
+        ),
+        'teacher' => array(
+            'practice' => 1, 'exam' => 1, 'assignments.submit' => 0,
+            'assignments.create' => 1, 'assignments.grade' => 1,
+            'lessons.read' => 1, 'lessons.write' => 1,
+            'bank.manage' => 1, 'import.manage' => 1, 'studio.manage' => 1,
+            'materials.read' => 1, 'materials.write' => 1,
+            'students.view' => 1, 'students.create' => 1,
+            'progress.self' => 1, 'progress.team' => 1, 'export.reports' => 1,
+            'school.view' => 1,
+        ),
+        'admin' => array(
+            'practice' => 1, 'exam' => 1, 'assignments.submit' => 0,
+            'assignments.create' => 1, 'assignments.grade' => 1,
+            'lessons.read' => 1, 'lessons.write' => 1,
+            'bank.manage' => 1, 'import.manage' => 1, 'studio.manage' => 1,
+            'materials.read' => 1, 'materials.write' => 1,
+            'students.view' => 1, 'students.create' => 1, 'students.bulk' => 1,
+            'students.lock' => 1, 'students.delete' => 1,
+            'progress.self' => 1, 'progress.team' => 1, 'export.reports' => 1,
+            'school.view' => 1, 'school.manage' => 1,
+            'notifications.send' => 1,
+        ),
+        'super_admin' => array(
+            'practice' => 1, 'exam' => 1, 'assignments.submit' => 0,
+            'assignments.create' => 1, 'assignments.grade' => 1,
+            'lessons.read' => 1, 'lessons.write' => 1,
+            'bank.manage' => 1, 'import.manage' => 1, 'studio.manage' => 1,
+            'materials.read' => 1, 'materials.write' => 1,
+            'students.view' => 1, 'students.create' => 1, 'students.bulk' => 1,
+            'students.lock' => 1, 'students.delete' => 1, 'students.role' => 1,
+            'progress.self' => 1, 'progress.team' => 1, 'export.reports' => 1,
+            'school.view' => 1, 'school.manage' => 1,
+            'notifications.send' => 1,
+            'permissions.manage' => 1, 'users.manage_admin' => 1,
+        ),
+    );
+}
+
+function seed_role_permissions() {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    $st = db()->prepare('INSERT IGNORE INTO role_permissions (role, perm_key, allowed) VALUES (?,?,?)');
+    foreach (default_role_perms() as $role => $perms) {
+        foreach ($perms as $k => $v) $st->execute(array($role, $k, (int)$v));
     }
 }

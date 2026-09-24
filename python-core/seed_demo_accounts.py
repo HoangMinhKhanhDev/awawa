@@ -227,6 +227,31 @@ def main():
         admin_id = cur.lastrowid
         print("Đã tạo admin demo.")
 
+    # --- Super admin demo (1.7) ---
+    sa_login = "0900000009"
+    sa_email = "super@hsg.local"
+    sa_pw = "Sup@123456"
+    existing_sa = cur.execute(
+        "SELECT id FROM students WHERE phone=? OR email=?", (sa_login, sa_email)
+    ).fetchone()
+    if existing_sa:
+        super_id = existing_sa["id"]
+        cur.execute(
+            "UPDATE students SET role='super_admin', active=1, password_hash=?, name=? WHERE id=?",
+            (hash_pw(sa_pw), "Super Admin", super_id),
+        )
+        print("Đã cập nhật super admin demo.")
+    else:
+        cur.execute(
+            """INSERT INTO students (name, class_name, team, note, dob, gender, phone, email,
+               password_hash, role, active, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("Super Admin", "ADMIN", "", "Super admin demo — sửa ma trận phân quyền",
+             "1980-01-01", "Khác", sa_login, sa_email, hash_pw(sa_pw), "super_admin", 1, days_ago(50)),
+        )
+        super_id = cur.lastrowid
+        print("Đã tạo super admin demo.")
+
     # --- Cấu trúc nhà trường ---
     now = days_ago(0)
     y = cur.execute("SELECT id FROM school_years WHERE is_current=1 LIMIT 1").fetchone()
@@ -299,6 +324,10 @@ def main():
     db.close()
 
     print("\n=== TÀI KHOẢN DEMO ===")
+    print("SUPER ADMIN (sửa ma trận phân quyền):")
+    print(f"  Đăng nhập : {sa_login}")
+    print(f"  hoặc email: {sa_email}")
+    print(f"  Mật khẩu  : {sa_pw}")
     print("ADMIN (bản quản trị):")
     print(f"  Đăng nhập : {a_login}")
     print(f"  hoặc email: {a_email}")

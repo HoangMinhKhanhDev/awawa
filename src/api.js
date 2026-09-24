@@ -116,6 +116,9 @@ const authMethods = (call) => ({
   },
   resetStudentPassword: (id, password) => call(`/students/${id}/reset-password`, { method: 'PUT', body: JSON.stringify({ password }) }),
   setStudentActive: (id, active) => call(`/students/${id}/active`, { method: 'PUT', body: JSON.stringify({ active: active ? 1 : 0 }) }),
+  bulkStudents: (payload) => call('/students/bulk', { method: 'POST', body: JSON.stringify(payload) }),
+  permissions: () => call('/permissions'),
+  updatePermissions: (payload) => call('/permissions', { method: 'PUT', body: JSON.stringify(payload) }),
 })
 
 // Cấu trúc nhà trường (Phase 1a) — admin: CRUD; staff: đọc
@@ -148,8 +151,8 @@ const mvpMethods = (call, qs) => ({
   assignments: (params = {}) => call('/assignments' + qs(params)),
   getAssignment: (id) => call(`/assignments/${id}`),
   createAssignment: (payload) => call('/assignments', { method: 'POST', body: JSON.stringify(payload) }),
-  submitAssignment: (id, answers) => call(`/assignments/${id}/submit`, { method: 'POST', body: JSON.stringify({ answers }) }),
-  draftAssignment: (id, answers) => call(`/assignments/${id}/draft`, { method: 'POST', body: JSON.stringify({ answers }) }),
+  submitAssignment: (id, answers, files = []) => call(`/assignments/${id}/submit`, { method: 'POST', body: JSON.stringify({ answers, files }) }),
+  draftAssignment: (id, answers, files = []) => call(`/assignments/${id}/draft`, { method: 'POST', body: JSON.stringify({ answers, files }) }),
   assignmentSubmissions: (id) => call(`/assignments/${id}/submissions`),
   gradeSubmission: (sid, payload) => call(`/submissions/${sid}/grade`, { method: 'PUT', body: JSON.stringify(payload) }),
   myResults: () => call('/me/results'),
@@ -157,7 +160,23 @@ const mvpMethods = (call, qs) => ({
   classOverview: () => call('/stats/class-overview'),
   lessons: (topic_id) => call('/lessons' + qs({ topic_id })),
   createLesson: (payload) => call('/lessons', { method: 'POST', body: JSON.stringify(payload) }),
+  updateLesson: (id, payload) => call(`/lessons/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteLesson: (id) => call(`/lessons/${id}`, { method: 'DELETE' }),
+  moveLesson: (id, direction) => call(`/lessons/${id}/move${qs({ direction })}`, { method: 'POST', body: '{}' }),
   completeLesson: (id, undo = false) => call(`/lessons/${id}/complete`, { method: 'POST', body: JSON.stringify({ undo }) }),
+  gradeHistory: (sid) => call(`/submissions/${sid}/grade-history`),
+  materials: (params = {}) => call('/materials' + qs(params)),
+  createMaterial: (payload) => call('/materials', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteMaterial: (id) => call(`/materials/${id}`, { method: 'DELETE' }),
+  notifications: (params = {}) => call('/notifications' + qs(params)),
+  markNotificationsRead: (id = null) => call('/notifications/read', { method: 'POST', body: JSON.stringify({ id }) }),
+  teamTimeline: (params = {}) => call('/stats/team-timeline' + qs(params)),
+  forgotPassword: (payload) => call('/auth/forgot-password', { method: 'POST', body: JSON.stringify(payload) }),
+  resetPassword: (payload) => call('/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
+  updateTopic: (id, payload) => call(`/topics/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteTopic: (id) => call(`/topics/${id}`, { method: 'DELETE' }),
+  getQuestion: (id) => call(`/questions/${id}`),
+  duplicateQuestion: (id) => call(`/questions/${id}/duplicate`, { method: 'POST', body: '{}' }),
 })
 
 async function req(path, options = {}) {
@@ -233,9 +252,11 @@ const legacyApi = {
     const s = q.toString()
     return req(`/api/questions${s ? `?${s}` : ''}`)
   },
+  getQuestion: (id) => req(`/api/questions/${id}`),
   createQuestion: (payload) => req('/api/questions', { method: 'POST', body: JSON.stringify(payload) }),
   updateQuestion: (id, payload) => req(`/api/questions/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteQuestion: (id) => req(`/api/questions/${id}`, { method: 'DELETE' }),
+  duplicateQuestion: (id) => req(`/api/questions/${id}/duplicate`, { method: 'POST', body: '{}' }),
   createExam: (payload) => req('/api/exams', { method: 'POST', body: JSON.stringify(payload) }),
   listExams: (mode = 'shared') => req(`/api/exams?mode=${encodeURIComponent(mode || 'shared')}`),
   getExam: (id) => req(`/api/exams/${id}`),
@@ -274,6 +295,7 @@ const legacyApi = {
     const s = q.toString()
     return s ? `?${s}` : ''
   }),
+  // Endpoints mới GĐ2–5 (legacy Python)
   ...schoolMethods((p, o) => req('/api' + p, o), (params = {}) => {
     const q = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null) q.append(k, v) })
@@ -291,6 +313,48 @@ const legacyApi = {
     return res.json()
   },
   bulkQuestions: (items) => req('/api/questions/bulk', { method: 'POST', body: JSON.stringify({ items }) }),
+  materials: (params = {}) => {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null) q.append(k, v) })
+    const s = q.toString()
+    return req(`/api/materials${s ? `?${s}` : ''}`)
+  },
+  createMaterial: (payload) => req('/api/materials', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteMaterial: (id) => req(`/api/materials/${id}`, { method: 'DELETE' }),
+  notifications: (params = {}) => {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null && v !== false) q.append(k, v) })
+    const s = q.toString()
+    return req(`/api/notifications${s ? `?${s}` : ''}`)
+  },
+  markNotificationsRead: (id = null) => req('/api/notifications/read', { method: 'POST', body: JSON.stringify({ id }) }),
+  teamTimeline: (params = {}) => {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null) q.append(k, v) })
+    const s = q.toString()
+    return req(`/api/stats/team-timeline${s ? `?${s}` : ''}`)
+  },
+  gradeHistory: (sid) => req(`/api/submissions/${sid}/grade-history`),
+  forgotPassword: (payload) => req('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify(payload) }),
+  resetPassword: (payload) => req('/api/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
+  updateTopic: (id, payload) => req(`/api/topics/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteTopic: (id) => req(`/api/topics/${id}`, { method: 'DELETE' }),
+  updateLesson: (id, payload) => req(`/api/lessons/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteLesson: (id) => req(`/api/lessons/${id}`, { method: 'DELETE' }),
+  moveLesson: (id, direction) => req(`/api/lessons/${id}/move?direction=${direction}`, { method: 'POST', body: '{}' }),
+  bulkStudents: (payload) => req('/api/students/bulk', { method: 'POST', body: JSON.stringify(payload) }),
+  permissions: () => req('/api/permissions'),
+  updatePermissions: (payload) => req('/api/permissions', { method: 'PUT', body: JSON.stringify(payload) }),
+  uploadAnyFile: async (file) => {
+    const base = await getBackendUrlLegacy()
+    const fd = new FormData()
+    fd.append('file', file)
+    const extra = /ngrok/i.test(base) ? { 'ngrok-skip-browser-warning': 'true' } : {}
+    const res = await fetch(`${base}/api/import/upload`, { method: 'POST', headers: { ...extra, ...sessionHeaders() }, body: fd })
+    if (!res.ok) throw new Error(`Upload lỗi ${res.status}`)
+    const j = await res.json()
+    return j.filename || file.name
+  },
 }
 
 // ================= HOSTINGER (PHP + MySQL) =================
@@ -354,6 +418,26 @@ const phpApi = {
   ...authMethods(preq),
   ...mvpMethods(preq, pquery),
   ...schoolMethods(preq, pquery),
+  // Đè lại chữ ký mvpMethods cho legacy (req đã bọc /api) — PHP dùng preq path trần
+  updateTopic: (id, payload) => preq(`/topics/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteTopic: (id) => preq(`/topics/${id}`, { method: 'DELETE' }),
+  getQuestion: (id) => preq(`/questions/${id}`),
+  duplicateQuestion: (id) => preq(`/questions/${id}/duplicate`, { method: 'POST', body: '{}' }),
+  updateLesson: (id, payload) => preq(`/lessons/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteLesson: (id) => preq(`/lessons/${id}`, { method: 'DELETE' }),
+  moveLesson: (id, direction) => preq(`/lessons/${id}/move${pquery({ direction })}`, { method: 'POST', body: '{}' }),
+  gradeHistory: (sid) => preq(`/submissions/${sid}/grade-history`),
+  materials: (params = {}) => preq(`/materials${pquery(params)}`),
+  createMaterial: (payload) => preq('/materials', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteMaterial: (id) => preq(`/materials/${id}`, { method: 'DELETE' }),
+  notifications: (params = {}) => preq(`/notifications${pquery(params)}`),
+  markNotificationsRead: (id = null) => preq('/notifications/read', { method: 'POST', body: JSON.stringify({ id }) }),
+  teamTimeline: (params = {}) => preq(`/stats/team-timeline${pquery(params)}`),
+  forgotPassword: (payload) => preq('/auth/forgot-password', { method: 'POST', body: JSON.stringify(payload) }),
+  resetPassword: (payload) => preq('/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
+  bulkStudents: (payload) => preq('/students/bulk', { method: 'POST', body: JSON.stringify(payload) }),
+  permissions: () => preq('/permissions'),
+  updatePermissions: (payload) => preq('/permissions', { method: 'PUT', body: JSON.stringify(payload) }),
   previewImportText: async (text) => ({ text, drafts: parseTextToDrafts(text) }),
   uploadImport: async (file) => {
     const text = await extractFileText(file)
@@ -364,6 +448,14 @@ const phpApi = {
     fd.append('file', file)
     const r = await preq('/uploads', { method: 'POST', body: fd })
     if (!r || !r.url) throw new Error('Server không trả về link ảnh.')
+    return r.url
+  },
+  // Upload file tự luận / học liệu (GV + HS) — mở rộng accept so với upload ảnh
+  uploadAnyFile: async (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const r = await preq('/uploads', { method: 'POST', body: fd })
+    if (!r || !r.url) throw new Error('Server không trả về link file.')
     return r.url
   },
   bulkQuestions: (items) => preq('/questions/bulk', { method: 'POST', body: JSON.stringify({ items }) }),

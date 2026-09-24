@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 import { IconUsers, IconPlus, IconKey, IconSearch } from '../components/icons.jsx'
+import { isAdminRole, isStaffRole, isSuperRole } from '../lib/roles.js'
 
 export default function Team() {
   const { toast, confirmBox, promptBox, errMsg } = useUI()
   const me = getSession().student
-  const isAdmin = (me?.role || 'student') === 'admin'
-  const isStaff = isAdmin || (me?.role || 'student') === 'teacher'
+  const isAdmin = isAdminRole(me)
+  const isSuper = isSuperRole(me)
+  const isStaff = isStaffRole(me)
   const [students, setStudents] = useState([])
   const [ranking, setRanking] = useState([])
   const [classes, setClasses] = useState([])
@@ -19,6 +21,8 @@ export default function Team() {
   const [editingId, setEditingId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [selected, setSelected] = useState(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -106,6 +110,42 @@ export default function Team() {
     const ok = await confirmBox(`Xóa học sinh ${s.name}?`, { danger: true, okLabel: 'Xóa' })
     if (!ok) return
     try { await api.deleteStudent(s.id); load(); toast('Đã xóa.') } catch (e) { toast(errMsg(e), 'err') }
+  }
+
+  const toggleSel = (id) => {
+    setSelected((prev) => {
+      const n = new Set(prev)
+      if (n.has(id)) n.delete(id); else n.add(id)
+      return n
+    })
+  }
+
+  const toggleAll = () => {
+    setSelected((prev) => {
+      if (prev.size === students.length) return new Set()
+      return new Set(students.map((s) => s.id))
+    })
+  }
+
+  const runBulk = async (action, extra = {}) => {
+    if (bulkBusy || !selected.size) return
+    const labels = { activate: 'Mở khóa', deactivate: 'Khóa', delete: 'Xóa', set_role: 'Đổi role' }
+    const label = labels[action] || action
+    const ok = await confirmBox(
+      action === 'delete'
+        ? `Xóa vĩnh viễn ${selected.size} tài khoản? Không hoàn tác.`
+        : `${label} ${selected.size} tài khoản?`,
+      { danger: action === 'delete' || action === 'deactivate', okLabel: label },
+    )
+    if (!ok) return
+    setBulkBusy(true)
+    try {
+      const r = await api.bulkStudents({ ids: [...selected], action, ...extra })
+      toast(`${label}: ${r.affected || 0} tài khoản${r.skipped?.length ? ` · bỏ qua ${r.skipped.length}` : ''}.`)
+      setSelected(new Set())
+      load()
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBulkBusy(false)
   }
 
   const rankOf = (name) => ranking.findIndex((r) => r.student_name === name)
@@ -200,7 +240,28 @@ export default function Team() {
       </div>
 
       <div className="card">
-        <h3>Danh sách ({students.length})</h3>
+        <div className="row spread">
+          <h3>Danh sách ({students.length})</h3>
+          {isAdmin && selected.size > 0 && (
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              <span className="badge blue">Đã chọn {selected.size}</span>
+              <button className="btn sm" disabled={bulkBusy} onClick={() => runBulk('activate')}>Mở khóa</button>
+              <button className="btn sm" disabled={bulkBusy} onClick={() => runBulk('deactivate')}>Khóa</button>
+              <button className="btn danger sm" disabled={bulkBusy} onClick={() => runBulk('delete')}>Xóa</button>
+              {isSuper && (
+                <select className="select" style={{ width: 'auto', maxWidth: 140 }} aria-label="Đổi role hàng loạt"
+                  value="" disabled={bulkBusy}
+                  onChange={(e) => { if (e.target.value) runBulk('set_role', { role: e.target.value }); e.target.value = '' }}>
+                  <option value="">Đổi role…</option>
+                  <option value="student">→ Học sinh</option>
+                  <option value="teacher">→ Giáo viên</option>
+                  <option value="admin">→ Quản trị</option>
+                </select>
+              )}
+              <button className="btn sm" onClick={() => setSelected(new Set())}>Bỏ chọn</button>
+            </div>
+          )}
+        </div>
         {students.length === 0 && !loading && (
           <div className="empty">
             {isStaff && !isAdmin ? 'Chưa có học sinh trong đội của bạn — thêm ở khung trên.' : 'Chưa có học sinh.'}
@@ -209,6 +270,7 @@ export default function Team() {
         <table className="tbl">
           <thead>
             <tr>
+              {isAdmin && <th style={{ width: 36 }}><input type="checkbox" aria-label="Chọn tất cả" checked={students.length > 0 && selected.size === students.length} onChange={toggleAll} /></th>}
               <th>Họ tên</th>
               <th>Đội / Lớp</th>
               <th>Trạng thái</th>
@@ -222,6 +284,17 @@ export default function Team() {
               const active = s.active === undefined || s.active === null ? 1 : s.active
               return (
                 <tr key={s.id} style={active === 0 ? { opacity: 0.55 } : undefined}>
+                  {isAdmin && (
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Chọn ${s.name}`}
+                        checked={selected.has(s.id)}
+                        onChange={() => toggleSel(s.id)}
+                        style={{ width: 16, height: 16 }}
+                      />
+                    </td>
+                  )}
                   <td><b>{s.name}</b>{s.note && <div className="small muted">{s.note}</div>}</td>
                   <td><span className="badge">{s.team || '—'}</span><div className="small muted">{s.class_name || ''}</div></td>
                   <td>{active ? <span className="badge green">Đang mở</span> : <span className="badge red">Đã khóa</span>}</td>

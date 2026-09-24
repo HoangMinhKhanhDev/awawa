@@ -1,22 +1,29 @@
 import { Navigate, NavLink, useLocation } from 'react-router-dom'
 import { IconBook, IconFileUp, IconShield, IconUsers, IconWand } from '../components/icons.jsx'
 import { getSession } from '../api.js'
+import { isAdminRole, isStaffRole } from '../lib/roles.js'
 import Bank from './Bank.jsx'
 import ImportDoc from './ImportDoc.jsx'
+import Permissions from './Permissions.jsx'
 import School from './School.jsx'
 import Studio from './Studio.jsx'
 import Team from './Team.jsx'
 
-const SUBS = ['studio', 'team', 'bank', 'import', 'school']
+const SUBS = ['studio', 'team', 'bank', 'import', 'school', 'permissions']
 
 export default function Manage() {
   const s = getSession()
   const role = s.student?.role || 'student'
-  const isStaff = role === 'teacher' || role === 'admin'
-  const isAdmin = role === 'admin'
+  const isStaff = isStaffRole(role)
+  const isAdmin = isAdminRole(role)
+  const isSuper = role === 'super_admin'
   const loc = useLocation()
   const seg = (loc.pathname.split('/')[2] || '')
-  const allowed = isAdmin ? SUBS : SUBS.filter((x) => x !== 'school')
+  const allowed = SUBS.filter((x) => {
+    if (x === 'school') return isAdmin
+    if (x === 'permissions') return isSuper
+    return true
+  })
 
   if (!s.token || !isStaff) {
     return (
@@ -28,7 +35,6 @@ export default function Manage() {
       </div>
     )
   }
-  // seg rỗng (đang ở /manage) hoặc không hợp lệ → redirect ngay, không mount nhầm Studio
   if (!seg || !allowed.includes(seg)) {
     return <Navigate to={allowed.includes('team') ? '/manage/team' : '/manage/studio'} replace />
   }
@@ -40,6 +46,7 @@ export default function Manage() {
     { id: 'bank', to: '/manage/bank', label: 'Ngân hàng', Icon: IconBook },
     { id: 'import', to: '/manage/import', label: 'Nhập đề', Icon: IconFileUp },
     ...(isAdmin ? [{ id: 'school', to: '/manage/school', label: 'Nhà trường', Icon: IconShield }] : []),
+    ...(isSuper ? [{ id: 'permissions', to: '/manage/permissions', label: 'Phân quyền', Icon: IconShield }] : []),
   ]
 
   return (
@@ -62,6 +69,7 @@ export default function Manage() {
       {sub === 'import' && <ImportDoc />}
       {sub === 'team' && <Team />}
       {sub === 'school' && isAdmin && <School />}
+      {sub === 'permissions' && isSuper && <Permissions />}
     </div>
   )
 }

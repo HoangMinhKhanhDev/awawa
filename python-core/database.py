@@ -166,7 +166,20 @@ ATTEMPT_MIGRATIONS = [
 
 QUESTION_MIGRATIONS = [
     ("image_url", "TEXT DEFAULT ''"),
+    ("code", "TEXT DEFAULT ''"),
+    ("tags", "TEXT DEFAULT '[]'"),
 ]
+
+LESSON_MIGRATIONS = [
+    ("required", "INTEGER DEFAULT 1"),
+    ("advanced", "INTEGER DEFAULT 0"),
+]
+
+EXAM_MIGRATIONS = [
+    ("shuffle_q", "INTEGER DEFAULT 1"),
+]
+
+MATERIAL_MIGRATIONS = []
 
 STUDENT_MIGRATIONS = [
     ("dob", "TEXT"),
@@ -188,6 +201,7 @@ ASSIGN_Q_MIGRATIONS = [
 
 SUBMISSION_MIGRATIONS = [
     ("question_scores", "TEXT"),
+    ("files", "TEXT DEFAULT '[]'"),
 ]
 
 
@@ -223,6 +237,56 @@ class DB:
         for name, ddl in SUBMISSION_MIGRATIONS:
             if name not in subcols:
                 self.conn.execute(f"ALTER TABLE submissions ADD COLUMN {name} {ddl}")
+        lcols = {r[1] for r in self.conn.execute("PRAGMA table_info(lessons)").fetchall()}
+        for name, ddl in LESSON_MIGRATIONS:
+            if name not in lcols:
+                self.conn.execute(f"ALTER TABLE lessons ADD COLUMN {name} {ddl}")
+        ecols = {r[1] for r in self.conn.execute("PRAGMA table_info(exams)").fetchall()}
+        for name, ddl in EXAM_MIGRATIONS:
+            if name not in ecols:
+                self.conn.execute(f"ALTER TABLE exams ADD COLUMN {name} {ddl}")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS grade_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          submission_id INTEGER NOT NULL,
+          score REAL,
+          feedback TEXT DEFAULT '',
+          question_scores TEXT,
+          graded_by INTEGER,
+          graded_at TEXT)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS materials (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject_id TEXT,
+          topic_id TEXT,
+          title TEXT NOT NULL,
+          description TEXT DEFAULT '',
+          file_url TEXT DEFAULT '',
+          file_type TEXT DEFAULT '',
+          grade INTEGER DEFAULT 12,
+          created_by INTEGER,
+          created_at TEXT)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER,
+          title TEXT NOT NULL,
+          body TEXT DEFAULT '',
+          link TEXT DEFAULT '',
+          read_at TEXT,
+          created_at TEXT)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS password_resets (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          student_id INTEGER NOT NULL,
+          code TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          used_at TEXT,
+          created_at TEXT)""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS role_permissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          role TEXT NOT NULL,
+          perm_key TEXT NOT NULL,
+          allowed INTEGER DEFAULT 0,
+          UNIQUE (role, perm_key))""")
+        self.seed_role_permissions()
+        self.conn.commit()
         self.conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
           token_hash TEXT PRIMARY KEY, student_id INTEGER NOT NULL,
           expires_at TEXT NOT NULL, created_at TEXT)""")
@@ -300,3 +364,54 @@ class DB:
         cur = self.conn.execute(sql, params)
         self.conn.commit()
         return cur
+
+    # Permission matrix (1.7) — seed idempotent theo role
+    DEFAULT_PERMS = {
+        "student": {
+            "practice": 1, "exam": 1, "assignments.submit": 1,
+            "lessons.read": 1, "materials.read": 1, "progress.self": 1,
+        },
+        "teacher": {
+            "practice": 1, "exam": 1, "assignments.submit": 0,
+            "assignments.create": 1, "assignments.grade": 1,
+            "lessons.read": 1, "lessons.write": 1,
+            "bank.manage": 1, "import.manage": 1, "studio.manage": 1,
+            "materials.read": 1, "materials.write": 1,
+            "students.view": 1, "students.create": 1,
+            "progress.self": 1, "progress.team": 1, "export.reports": 1,
+            "school.view": 1,
+        },
+        "admin": {
+            "practice": 1, "exam": 1, "assignments.submit": 0,
+            "assignments.create": 1, "assignments.grade": 1,
+            "lessons.read": 1, "lessons.write": 1,
+            "bank.manage": 1, "import.manage": 1, "studio.manage": 1,
+            "materials.read": 1, "materials.write": 1,
+            "students.view": 1, "students.create": 1, "students.bulk": 1,
+            "students.lock": 1, "students.delete": 1,
+            "progress.self": 1, "progress.team": 1, "export.reports": 1,
+            "school.view": 1, "school.manage": 1,
+            "notifications.send": 1,
+        },
+        "super_admin": {
+            "practice": 1, "exam": 1, "assignments.submit": 0,
+            "assignments.create": 1, "assignments.grade": 1,
+            "lessons.read": 1, "lessons.write": 1,
+            "bank.manage": 1, "import.manage": 1, "studio.manage": 1,
+            "materials.read": 1, "materials.write": 1,
+            "students.view": 1, "students.create": 1, "students.bulk": 1,
+            "students.lock": 1, "students.delete": 1, "students.role": 1,
+            "progress.self": 1, "progress.team": 1, "export.reports": 1,
+            "school.view": 1, "school.manage": 1,
+            "notifications.send": 1,
+            "permissions.manage": 1, "users.manage_admin": 1,
+        },
+    }
+
+    def seed_role_permissions(self):
+        for role, perms in self.DEFAULT_PERMS.items():
+            for key, allowed in perms.items():
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO role_permissions (role, perm_key, allowed)
+                       VALUES (?,?,?)""", (role, key, allowed))
+        self.conn.commit()

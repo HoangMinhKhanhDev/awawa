@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { IconTrophy, IconCap, IconTimer } from '../components/icons.jsx'
+import { IconTrophy, IconCap, IconTimer, IconTable, IconFileUp, IconChart } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
+import { exportCsv, printPdf } from '../lib/export.js'
+import { isStaffRole } from '../lib/roles.js'
 
 export default function Progress() {
   const [stats, setStats] = useState(null)
@@ -10,7 +12,9 @@ export default function Progress() {
   const [mode, setMode] = useState('exam')
   const [team, setTeam] = useState('')
   const [teams, setTeams] = useState([])
+  const [timeline, setTimeline] = useState(null)
   const me = getSession().student
+  const isStaff = isStaffRole(me)
 
   useEffect(() => {
     let alive = true
@@ -18,12 +22,13 @@ export default function Progress() {
       api.stats().catch(() => null),
       api.attempts().catch(() => []),
       api.myTeams?.().catch(() => []) || Promise.resolve([]),
-    ]).then(([st, at, tms]) => {
+      isStaff && api.teamTimeline ? api.teamTimeline({ days: 30 }).catch(() => null) : Promise.resolve(null),
+    ]).then(([st, at, tms, tl]) => {
       if (!alive) return
-      setStats(st); setAttempts(at || []); setTeams(tms || [])
+      setStats(st); setAttempts(at || []); setTeams(tms || []); setTimeline(tl)
     })
     return () => { alive = false }
-  }, [])
+  }, []) // eslint-disable-line
 
   useEffect(() => {
     let alive = true
@@ -33,6 +38,17 @@ export default function Progress() {
 
   const myId = me?.id
   const pct = (x) => `${Math.round((x || 0) * 100)}%`
+
+  const boardHeaders = ['#', 'Họ tên', 'Lớp', 'Đội', 'Lượt', 'Cao nhất', 'TB']
+  const boardRows = board.map((r) => [r.rank, r.name, r.class_name || '', r.team || '', r.attempts, pct(r.best), pct(r.avg)])
+
+  const doExcel = () => exportCsv(`bang-xep-hang-${mode}-${team || 'tat-ca'}`, boardHeaders, boardRows)
+  const doPdf = () => printPdf(`Bảng xếp hạng — ${mode === 'exam' ? 'Thi thử' : 'Luyện tập'}${team ? ` · ${team}` : ''}`, boardHeaders, boardRows,
+    `Chỉ tính lượt thi của tài khoản đăng nhập. Xuất bởi Ôn luyện HSG.`)
+
+  const tlRows = (timeline?.attempts || []).map((t) => [t.day, t.n, Math.round((t.avg_acc || 0) * 100) + '%', t.c, t.t])
+  const doTlExcel = () => exportCsv('xu-huong-doi-30ngay', ['Ngày', 'Lượt thi', 'ĐTB %', 'Đúng', 'Tổng'], tlRows)
+  const doTlPdf = () => printPdf('Xu hướng đội tuyển 30 ngày', ['Ngày', 'Lượt thi', 'ĐTB %', 'Đúng', 'Tổng'], tlRows)
 
   return (
     <div className="grid">
@@ -60,6 +76,12 @@ export default function Progress() {
               <option value="">Tất cả đội</option>
               {teams.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
             </select>
+            {isStaff && (
+              <>
+                <button className="btn sm" onClick={doExcel} title="Xuất Excel"><IconFileUp className="icn sm" />Excel</button>
+                <button className="btn sm" onClick={doPdf} title="In / Lưu PDF"><IconTable className="icn sm" />PDF</button>
+              </>
+            )}
           </div>
         </div>
         <div className="small muted" style={{ marginTop: 4 }}>Chỉ tính lượt thi của tài khoản đăng nhập · xếp theo % cao nhất.</div>
@@ -83,6 +105,36 @@ export default function Progress() {
           </div>
         )}
       </div>
+
+      {isStaff && timeline && (
+        <div className="card">
+          <div className="row spread">
+            <h3 className="icon-h" style={{ margin: 0 }}><IconChart className="icn" />Xu hướng đội tuyển 30 ngày</h3>
+            <div className="row">
+              <button className="btn sm" onClick={doTlExcel}><IconFileUp className="icn sm" />Excel</button>
+              <button className="btn sm" onClick={doTlPdf}><IconTable className="icn sm" />PDF</button>
+            </div>
+          </div>
+          {(timeline.attempts || []).length === 0 ? (
+            <div className="empty">Chưa có lượt thi trong 30 ngày qua.</div>
+          ) : (
+            <div style={{ marginTop: 10 }}>
+              {(timeline.attempts || []).slice(-14).map((t) => {
+                const w = Math.round((t.avg_acc || 0) * 100)
+                return (
+                  <div key={t.day} className="board-row" style={{ display: 'block', padding: '8px 4px' }}>
+                    <div className="row spread small">
+                      <span>{t.day}</span>
+                      <span className="muted">{t.n} lượt · {w}% TB · {t.c}/{t.t} đúng</span>
+                    </div>
+                    <div className="progress" style={{ marginTop: 6 }}><div style={{ width: `${w}%` }} /></div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid c2">
         <div className="card">

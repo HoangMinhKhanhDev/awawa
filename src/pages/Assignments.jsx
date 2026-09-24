@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { IconTask, IconPlus, IconPen, IconCheckCircle, IconClock, IconAward, IconArrowLeft } from '../components/icons.jsx'
+import { IconTask, IconPlus, IconPen, IconCheckCircle, IconClock, IconAward, IconArrowLeft, IconFile } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
+import { isStaffRole } from '../lib/roles.js'
 
 function statusBadge(st) {
   if (st === 'graded') return <span className="badge green"><IconAward className="icn sm" />Đã chấm</span>
@@ -20,7 +21,7 @@ export default function Assignments() {
 function AssignmentList() {
   const { toast, errMsg } = useUI()
   const rawRole = getSession().student?.role || 'student'
-  const teacher = rawRole === 'teacher' || rawRole === 'admin'
+  const teacher = isStaffRole(rawRole)
   const [list, setList] = useState([])
   const [classes, setClasses] = useState([])
   const [showCreate, setShowCreate] = useState(false)
@@ -141,6 +142,9 @@ function AssignmentList() {
               <div className="small muted">{a.class_name}{a.topic_name ? ` · ${a.topic_name}` : ''}{a.deadline ? ` · hạn ${new Date(a.deadline).toLocaleDateString('vi-VN')}` : ''}</div>
             </div>
             <div className="row">
+              {!teacher && a.deadline && new Date(a.deadline + (a.deadline.length === 10 ? 'T23:59:59' : '')) < new Date() && a.status !== 'graded' && (
+                <span className="badge red"><IconClock className="icn sm" />Quá hạn</span>
+              )}
               {!teacher && statusBadge(a.status)}
               {teacher && <span className="badge blue"><IconPen className="icn sm" />Chấm / xem</span>}
             </div>
@@ -155,12 +159,22 @@ function AssignmentDetail() {
   const { toast, errMsg } = useUI()
   const { id } = useParams()
   const rawRole = getSession().student?.role || 'student'
-  const teacher = rawRole === 'teacher' || rawRole === 'admin'
+  const teacher = isStaffRole(rawRole)
   const [a, setA] = useState(null)
   const [answers, setAnswers] = useState({})
+  const [files, setFiles] = useState([])
   const [msg, setMsg] = useState('')
   const [saving, setSaving] = useState(false)
+  const [autoAt, setAutoAt] = useState(null)
+  const [uploading, setUploading] = useState(false)
   const nav = useNavigate()
+  const answersRef = useRef(answers)
+  const filesRef = useRef(files)
+  const autoTimer = useRef(null)
+  const dirtyRef = useRef(false)
+
+  answersRef.current = answers
+  filesRef.current = files
 
   const load = async () => {
     try {
@@ -169,16 +183,68 @@ function AssignmentDetail() {
       if (r.my_submission?.answer) {
         try { setAnswers(JSON.parse(r.my_submission.answer) || {}) } catch {}
       }
+      try {
+        const fl = r.my_submission?.files
+        setFiles(fl ? (typeof fl === 'string' ? JSON.parse(fl) : fl) : [])
+      } catch { setFiles([]) }
     } catch (e) { setMsg(errMsg(e)) }
   }
   useEffect(() => { load() }, [id])
 
+  // Autosave debounce 2s — giữ nháp khi rời trang
+  const scheduleAuto = () => {
+    dirtyRef.current = true
+    clearTimeout(autoTimer.current)
+    autoTimer.current = setTimeout(async () => {
+      if (!dirtyRef.current || teacher) return
+      try {
+        const list = (a?.questions || []).map((q) => ({ idx: q.idx, text: answersRef.current[q.idx] || '' }))
+        await api.draftAssignment(a.id, list, filesRef.current)
+        dirtyRef.current = false
+        setAutoAt(new Date())
+      } catch { /* im lặng — thử lại lần sau */ }
+    }, 2000)
+  }
+
+  useEffect(() => () => clearTimeout(autoTimer.current), [])
+
+  // Lưu nháp khi đóng tab nếu còn dirty
+  useEffect(() => {
+    const onHide = () => {
+      if (!dirtyRef.current || !a || teacher) return
+      try {
+        const list = (a.questions || []).map((q) => ({ idx: q.idx, text: answersRef.current[q.idx] || '' }))
+        api.draftAssignment(a.id, list, filesRef.current).catch(() => {})
+        dirtyRef.current = false
+      } catch {}
+    }
+    window.addEventListener('pagehide', onHide)
+    return () => window.removeEventListener('pagehide', onHide)
+  }, [a, teacher])
+
+  const pickFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading(true)
+    try {
+      if (!api.uploadAnyFile) { toast('Chế độ LAN chưa hỗ trợ upload file — gửi link trong câu trả lời.', 'warn'); setUploading(false); e.target.value = ''; return }
+      const url = await api.uploadAnyFile(file)
+      setFiles((f) => [...f, url].slice(0, 10))
+      scheduleAuto()
+      toast('Đã đính kèm file.')
+    } catch (err) { toast(errMsg(err), 'err') }
+    setUploading(false)
+    e.target.value = ''
+  }
+
   const submit = async () => {
     if (saving) return
+    if (a.deadline_passed) { toast('Đã qua hạn nộp bài.', 'err'); return }
     setSaving(true); setMsg('')
     try {
       const list = (a.questions || []).map((q) => ({ idx: q.idx, text: answers[q.idx] || '' }))
-      await api.submitAssignment(a.id, list)
+      await api.submitAssignment(a.id, list, files)
+      dirtyRef.current = false
       toast('Đã nộp bài.')
       await load()
     } catch (e) { setMsg(errMsg(e)) }
@@ -190,7 +256,9 @@ function AssignmentDetail() {
     setSaving(true); setMsg('')
     try {
       const list = (a.questions || []).map((q) => ({ idx: q.idx, text: answers[q.idx] || '' }))
-      await api.draftAssignment(a.id, list)
+      await api.draftAssignment(a.id, list, files)
+      dirtyRef.current = false
+      setAutoAt(new Date())
       toast('Đã lưu nháp.')
       await load()
     } catch (e) { setMsg(errMsg(e)) }
@@ -200,10 +268,17 @@ function AssignmentDetail() {
   if (!a) return <div className="grid"><div className="empty">{msg || 'Đang tải…'}</div></div>
   const sub = a.my_submission
   const graded = sub && sub.score != null
-  const canEdit = !teacher && (!sub || !graded)
+  const pastDeadline = !!a.deadline_passed
+  const canEdit = !teacher && (!sub || !graded) && !pastDeadline
   const totalPts = (a.questions || []).reduce((s, q) => s + (Number(q.points) || 0), 0)
   let qscores = null
   try { qscores = sub?.question_scores ? (typeof sub.question_scores === 'string' ? JSON.parse(sub.question_scores) : sub.question_scores) : null } catch {}
+  let subFiles = files
+  try {
+    if (sub?.files && !files.length) {
+      subFiles = typeof sub.files === 'string' ? JSON.parse(sub.files) : sub.files
+    }
+  } catch {}
 
   return (
     <div className="grid">
@@ -222,6 +297,12 @@ function AssignmentDetail() {
             : statusBadge(sub?.submitted_at ? 'submitted' : 'draft'))}
           {!teacher && !sub && statusBadge('todo')}
         </div>
+        {pastDeadline && !teacher && (
+          <div className="msg err" role="alert" style={{ marginTop: 8 }}><IconClock className="icn sm" /> Đã qua hạn nộp — không thể nộp bài mới.</div>
+        )}
+        {!pastDeadline && a.deadline && !teacher && (
+          <div className="small muted" style={{ marginTop: 6 }}>Còn đến hết ngày {new Date(a.deadline).toLocaleDateString('vi-VN')}.</div>
+        )}
         {a.description && <div className="small" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{a.description}</div>}
         {graded && sub.feedback && (
           <div className="panel" style={{ marginTop: 12 }}><IconCheckCircle className="icn" style={{ color: 'var(--leaf)' }} /> <b>Nhận xét:</b> {sub.feedback}</div>
@@ -247,7 +328,7 @@ function AssignmentDetail() {
           {teacher ? (
             q.answer && <div className="small muted">Đáp án: {q.answer}</div>
           ) : canEdit ? (
-            <textarea className="textarea" value={answers[q.idx] || ''} onChange={(e) => setAnswers({ ...answers, [q.idx]: e.target.value })} placeholder="Nhập câu trả lời…" aria-label={`Câu trả lời câu ${q.idx}`} />
+            <textarea className="textarea" value={answers[q.idx] || ''} onChange={(e) => { setAnswers({ ...answers, [q.idx]: e.target.value }); scheduleAuto() }} placeholder="Nhập câu trả lời…" aria-label={`Câu trả lời câu ${q.idx}`} />
           ) : (
             <div className="answer-box small">
               {(() => { try { const m = JSON.parse(sub.answer || '{}'); return m[q.idx] || '(trống)' } catch { return '(trống)' } })()}
@@ -256,12 +337,46 @@ function AssignmentDetail() {
         </div>
       ))}
 
+      {!teacher && (
+        <div className="card">
+          <h3 className="icon-h"><IconFile className="icn" />Đính kèm file tự luận (tùy chọn)</h3>
+          <div className="small muted">PDF/DOC/DOCX/ZIP · tối đa theo cấu hình server.</div>
+          {canEdit && (
+            <div className="row" style={{ marginTop: 8 }}>
+              <input type="file" accept=".pdf,.doc,.docx,.zip,.rar,.txt" onChange={pickFile} disabled={uploading} aria-label="Chọn file bài làm" />
+              {uploading && <span className="small muted">Đang tải lên…</span>}
+            </div>
+          )}
+          {subFiles.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {subFiles.map((u, i) => (
+                <div key={i} className="board-row">
+                  <IconFile className="icn sm" />
+                  <a href={u} target="_blank" rel="noreferrer" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.split('/').pop()}</a>
+                  {canEdit && <button className="btn danger sm" onClick={() => { setFiles(files.filter((_, k) => k !== i)); scheduleAuto() }}>Gỡ</button>}
+                </div>
+              ))}
+            </div>
+          )}
+          {graded && Array.isArray(subFiles) === false && (() => {
+            try {
+              const fl = typeof sub.files === 'string' ? JSON.parse(sub.files) : (sub.files || [])
+              return fl.length ? fl.map((u, i) => (
+                <div key={i} className="board-row"><IconFile className="icn sm" /><a href={u} target="_blank" rel="noreferrer">{u}</a></div>
+              )) : null
+            } catch { return null }
+          })()}
+        </div>
+      )}
+
       {!teacher && canEdit && (
         <div className="card">
           <div className="row">
             <button className="btn" onClick={saveDraft} disabled={saving}>Lưu nháp</button>
-            <button className="btn primary" onClick={submit} disabled={saving}><IconCheckCircle className="icn sm" />{saving ? 'Đang nộp…' : sub && sub.submitted_at ? 'Nộp lại' : 'Nộp bài'}</button>
-            <span className="small muted">Lưu nháp giữ bài làm dở — không mất khi thoát trang.</span>
+            <button className="btn primary" onClick={submit} disabled={saving || pastDeadline}><IconCheckCircle className="icn sm" />{saving ? 'Đang nộp…' : sub && sub.submitted_at ? 'Nộp lại' : 'Nộp bài'}</button>
+            <span className="small muted">
+              {autoAt ? `Tự lưu nháp lúc ${autoAt.toLocaleTimeString('vi-VN')}` : 'Tự lưu nháp sau 2s — không mất khi thoát trang.'}
+            </span>
           </div>
         </div>
       )}

@@ -6,11 +6,12 @@ import {
 } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
+import { isStaffRole } from '../lib/roles.js'
 
 export default function Home() {
   const s = getSession()
   const me = s.student
-  const isTeacher = (me?.role || 'student') === 'teacher' || (me?.role || 'student') === 'admin'
+  const isTeacher = isStaffRole(me?.role || 'student')
   if (!s.token) return <Navigate to="/login" replace />
   return isTeacher ? <TeacherHome /> : <StudentHome me={me} />
 }

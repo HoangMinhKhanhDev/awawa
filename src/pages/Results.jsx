@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { IconTrophy, IconTask, IconChart } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
+import { isStaffRole } from '../lib/roles.js'
 
 export default function Results() {
   const s = getSession()
-  const isTeacher = (s.student?.role || 'student') === 'teacher' || (s.student?.role || 'student') === 'admin'
+  const isTeacher = isStaffRole(s.student?.role || 'student')
   const [progress, setProgress] = useState(null)
   const [results, setResults] = useState([])
 

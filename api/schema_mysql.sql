@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS questions (
   score FLOAT DEFAULT 1,
   source VARCHAR(32) DEFAULT 'mẫu',
   image_url VARCHAR(2000) DEFAULT '',
+  code VARCHAR(64) DEFAULT '',
+  tags TEXT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_q_subject FOREIGN KEY (subject_id)
     REFERENCES subjects (id) ON DELETE CASCADE,
@@ -140,6 +142,7 @@ CREATE TABLE IF NOT EXISTS exams (
   mode VARCHAR(32) DEFAULT 'practice',
   duration_min INT DEFAULT 45,
   question_ids MEDIUMTEXT NULL,
+  shuffle_q TINYINT DEFAULT 1,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -191,10 +194,59 @@ CREATE TABLE IF NOT EXISTS submissions (
   score FLOAT NULL,
   feedback TEXT DEFAULT '',
   question_scores MEDIUMTEXT NULL,
+  files TEXT NULL,
   submitted_at DATETIME NULL,
   graded_at DATETIME NULL,
   UNIQUE KEY uq_sub (assignment_id, student_id),
   INDEX idx_sub_student (student_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS grade_history (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  submission_id INT NOT NULL,
+  score FLOAT NULL,
+  feedback TEXT DEFAULT '',
+  question_scores MEDIUMTEXT NULL,
+  graded_by INT NULL,
+  graded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_gh_sub (submission_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS materials (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  subject_id VARCHAR(64) NULL,
+  topic_id VARCHAR(64) NULL,
+  title VARCHAR(255) NOT NULL,
+  description TEXT DEFAULT '',
+  file_url VARCHAR(2000) DEFAULT '',
+  file_type VARCHAR(32) DEFAULT '',
+  grade INT DEFAULT 12,
+  created_by INT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_mat_subject (subject_id),
+  INDEX idx_mat_topic (topic_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NULL,
+  title VARCHAR(255) NOT NULL,
+  body TEXT DEFAULT '',
+  link VARCHAR(500) DEFAULT '',
+  read_at DATETIME NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_n_user (user_id),
+  INDEX idx_n_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS password_resets (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  student_id INT NOT NULL,
+  code VARCHAR(16) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_pr_student (student_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS lessons (
@@ -203,6 +255,8 @@ CREATE TABLE IF NOT EXISTS lessons (
   title VARCHAR(255) NOT NULL,
   content MEDIUMTEXT DEFAULT '',
   idx INT DEFAULT 1,
+  required TINYINT DEFAULT 1,
+  advanced TINYINT DEFAULT 0,
   INDEX idx_l_topic (topic_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

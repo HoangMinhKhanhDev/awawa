@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { IconArrowLeft, IconCheck, IconPen, IconClock, IconUsers, IconAward } from '../components/icons.jsx'
+import { IconArrowLeft, IconCheck, IconPen, IconClock, IconUsers, IconAward, IconHistory, IconFile } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
+import { isStaffRole } from '../lib/roles.js'
 
 export default function Grading() {
   const { id } = useParams()
@@ -12,7 +13,7 @@ export default function Grading() {
 
 function GradePick() {
   const rawRole = getSession().student?.role || 'student'
-  const teacher = rawRole === 'teacher' || rawRole === 'admin'
+  const teacher = isStaffRole(rawRole)
   const [list, setList] = useState([])
   const nav = useNavigate()
   useEffect(() => {
@@ -48,7 +49,7 @@ function GradeOne() {
   const { toast, errMsg } = useUI()
   const { id } = useParams()
   const rawRole = getSession().student?.role || 'student'
-  const teacher = rawRole === 'teacher' || rawRole === 'admin'
+  const teacher = isStaffRole(rawRole)
   const [data, setData] = useState(null)
   const [err, setErr] = useState('')
   const [openId, setOpenId] = useState(null)
@@ -56,6 +57,8 @@ function GradeOne() {
   const [score, setScore] = useState('')
   const [feedback, setFeedback] = useState('')
   const [saving, setSaving] = useState(false)
+  const [history, setHistory] = useState([])
+  const [showHistory, setShowHistory] = useState(null)
   const nav = useNavigate()
 
   const load = async () => {
@@ -85,6 +88,15 @@ function GradeOne() {
     setQsForm(init)
     setScore(s.score != null ? String(s.score) : '')
     setFeedback(s.feedback || '')
+    if (s.submission_id && api.gradeHistory) {
+      api.gradeHistory(s.submission_id).then(setHistory).catch(() => setHistory([]))
+    } else setHistory([])
+  }
+
+  const openHist = async (sid) => {
+    if (showHistory === sid) { setShowHistory(null); return }
+    setShowHistory(sid)
+    try { setHistory(await api.gradeHistory(sid)) } catch { setHistory([]) }
   }
 
   const sumPts = qs.reduce((s, q) => s + (Number(qsForm[q.idx]) || 0), 0)
@@ -134,11 +146,32 @@ function GradeOne() {
               {s.status === 'draft' && <span className="badge">Nháp (chưa nộp)</span>}
               {s.status === 'submitted' && <span className="badge amber"><IconClock className="icn sm" />Chờ chấm</span>}
               {s.status === 'graded' && <span className="badge green"><IconCheck className="icn sm" />{s.score} / 10</span>}
+              {s.submission_id && s.status === 'graded' && (
+                <button className="btn sm" onClick={() => openHist(s.submission_id)} title="Lịch sử sửa điểm"><IconHistory className="icn sm" /></button>
+              )}
               {s.submission_id && s.status !== 'todo' && s.status !== 'draft' && (
                 <button className="btn primary" onClick={() => openGrade(s)}><IconPen className="icn sm" />{s.status === 'graded' ? 'Sửa điểm' : 'Chấm'}</button>
               )}
             </div>
           </div>
+
+          {showHistory === s.submission_id && history.length > 0 && (
+            <div className="panel" style={{ marginTop: 8 }}>
+              <b className="small"><IconHistory className="icn sm" /> Lịch sử chấm ({history.length})</b>
+              {history.map((h) => (
+                <div key={h.id} className="board-row" style={{ display: 'block', padding: '6px 4px' }}>
+                  <div className="row spread">
+                    <span className="small"><b>{h.score != null ? h.score : '—'}</b> / 10{h.grader_name ? ` · ${h.grader_name}` : ''}</span>
+                    <span className="small muted">{h.graded_at ? new Date(h.graded_at).toLocaleString('vi-VN') : ''}</span>
+                  </div>
+                  {h.feedback && <div className="small muted">{h.feedback}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+          {showHistory === s.submission_id && history.length === 0 && (
+            <div className="small muted" style={{ marginTop: 6 }}>Chưa có lần chấm trước.</div>
+          )}
 
           {s.submission_id && openId !== s.submission_id && (s.status === 'submitted' || s.status === 'graded') && (
             <div style={{ marginTop: 10 }}>
@@ -148,6 +181,12 @@ function GradeOne() {
                   <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{(s.answers && s.answers[q.idx]) || '(trống)'}</div>
                 </div>
               ))}
+              {Array.isArray(s.files) && s.files.length > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  <div className="small muted"><IconFile className="icn sm" /> File bài làm:</div>
+                  {s.files.map((u, i) => <a key={i} className="btn sm" href={u} target="_blank" rel="noreferrer" style={{ marginRight: 6 }}>Mở file {i + 1}</a>)}
+                </div>
+              )}
               {s.feedback && <div className="small" style={{ marginTop: 6 }}><b>Nhận xét:</b> {s.feedback}</div>}
             </div>
           )}
@@ -170,6 +209,12 @@ function GradeOne() {
                   </div>
                 </div>
               ))}
+              {history.length > 0 && (
+                <div className="small muted" style={{ marginTop: 8 }}>
+                  <IconHistory className="icn sm" /> Đã chấm {history.length} lần — gần nhất: {history[0]?.score ?? '—'}/10
+                  {history[0]?.graded_at ? ` (${new Date(history[0].graded_at).toLocaleString('vi-VN')})` : ''}
+                </div>
+              )}
               <div className="row spread" style={{ marginTop: 10 }}>
                 <b>Tổng điểm câu: {sumPts}{maxTotal ? ` / ${maxTotal}` : ''}</b>
                 <button className="btn" onClick={autoScore}><IconAward className="icn sm" />Quy về thang 10</button>
