@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS assign_questions (
   idx INTEGER NOT NULL DEFAULT 1,
   content TEXT NOT NULL,
   answer TEXT DEFAULT '',
-  points REAL DEFAULT 1
+  points REAL DEFAULT 1,
+  question_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS submissions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,6 +107,16 @@ CREATE TABLE IF NOT EXISTS submissions (
   submitted_at TEXT,
   graded_at TEXT,
   UNIQUE (assignment_id, student_id)
+);
+CREATE TABLE IF NOT EXISTS submission_answers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  submission_id INTEGER NOT NULL,
+  question_id INTEGER,
+  assign_q_idx INTEGER,
+  answer TEXT DEFAULT '',
+  is_correct INTEGER,
+  points REAL,
+  feedback TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS lessons (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +191,7 @@ TOPIC_MIGRATIONS = [
 
 ASSIGN_Q_MIGRATIONS = [
     ("points", "REAL DEFAULT 1"),
+    ("question_id", "INTEGER"),
 ]
 
 SUBMISSION_MIGRATIONS = [

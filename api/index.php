@@ -1184,6 +1184,19 @@ function sub_status($sub) {
     return 'draft';
 }
 
+// M3: dong bo submission_answers tu map idx=>text (ghi de, chua cham)
+function sync_submission_answers($sid, $aid, $map) {
+    $aqs = q_all('SELECT id, idx, question_id FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
+    if (!$aqs) return;
+    db()->prepare('DELETE FROM submission_answers WHERE submission_id=?')->execute(array($sid));
+    $ins = db()->prepare('INSERT INTO submission_answers (submission_id, question_id, assign_q_idx, answer) VALUES (?,?,?,?)');
+    foreach ($aqs as $aq) {
+        $idx = (int)$aq['idx'];
+        $text = isset($map[(string)$idx]) ? (string)$map[(string)$idx] : (isset($map[$idx]) ? (string)$map[$idx] : '');
+        $ins->execute(array($sid, $aq['question_id'], $idx, mb_substr($text, 0, 4000)));
+    }
+}
+
 function deadline_passed($deadline) {
     if ($deadline === null || $deadline === '') return false;
     // Date-only → so sanh den cuoi ngay
@@ -1313,8 +1326,11 @@ if ($path === '/assignments' && $method === 'POST') {
         $ans = is_string($q) ? '' : trim($q['answer'] ?? '');
         $pts = is_string($q) ? 1 : (float)($q['points'] ?? 1);
         if ($pts <= 0) $pts = 1;
-        db()->prepare('INSERT INTO assign_questions (assignment_id, idx, content, answer, points) VALUES (?,?,?,?,?)')
-            ->execute(array($aid, $i + 1, mb_substr($content, 0, 4000), mb_substr($ans, 0, 4000), $pts));
+        // M3: lien ket cau hoi ngan hang (question_id) neu co
+        $qid = is_string($q) ? null : (isset($q['question_id']) ? (int)$q['question_id'] : null);
+        if ($qid && !q_one('SELECT 1 FROM questions WHERE id=?', array($qid))) $qid = null;
+        db()->prepare('INSERT INTO assign_questions (assignment_id, idx, content, answer, points, question_id) VALUES (?,?,?,?,?,?)')
+            ->execute(array($aid, $i + 1, mb_substr($content, 0, 4000), mb_substr($ans, 0, 4000), $pts, $qid));
         $n++;
     }
     if ($n === 0) jerr('Cần ít nhất 1 câu hỏi.');
@@ -1336,7 +1352,7 @@ if (preg_match('#^/assignments/(\d+)$#', $path, $m)) {
     $teacher = is_role_teacher($me);
     if (!$teacher && !in_array((int)$a['team_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
     $a['deadline_passed'] = deadline_passed($a['deadline'] ?? null);
-    $qs = q_all('SELECT id, idx, content, points' . ($teacher ? ', answer' : '') . ' FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
+    $qs = q_all('SELECT id, idx, content, points, question_id' . ($teacher ? ', answer' : '') . ' FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
     $a['questions'] = $qs;
     if (!$teacher) {
         $sub = q_one('SELECT id, answer, score, feedback, submitted_at, graded_at, question_scores, files FROM submissions WHERE assignment_id=? AND student_id=?', array($aid, $me['id']));
@@ -1374,6 +1390,7 @@ if (preg_match('#^/assignments/(\d+)/submit$#', $path, $m)) {
             ->execute(array($aid, $me['id'], $payload, $files));
         $sid = (int)db()->lastInsertId();
     }
+    sync_submission_answers($sid, $aid, $map);
     j(array('id' => $sid, 'status' => 'submitted'));
 }
 
@@ -1406,6 +1423,7 @@ if (preg_match('#^/assignments/(\d+)/draft$#', $path, $m)) {
             ->execute(array($aid, $me['id'], $payload, $files));
         $sid = (int)db()->lastInsertId();
     }
+    sync_submission_answers($sid, $aid, $map);
     j(array('id' => $sid, 'status' => 'draft'));
 }
 
@@ -1420,13 +1438,26 @@ if (preg_match('#^/assignments/(\d+)/submissions$#', $path, $m)) {
         FROM team_members tm JOIN students s ON s.id=tm.user_id
         LEFT JOIN submissions sub ON sub.assignment_id=? AND sub.student_id=s.id
         WHERE tm.team_id=? AND tm.member_role=\'student\' AND (tm.left_at IS NULL OR tm.left_at=\'\') ORDER BY s.name', array($aid, $a['team_id']));
-    $qs = q_all('SELECT idx, content, answer, points FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
+    $qs = q_all('SELECT idx, content, answer, points, question_id FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
     $out = array();
     foreach ($rows as $r) {
         $ans = json_decode($r['answer'] ?? 'null', true);
         $qscores = json_decode($r['question_scores'] ?? 'null', true);
         $files = json_decode($r['files'] ?? '[]', true);
         if (!is_array($files)) $files = array();
+        $items = array();
+        if ($r['sub_id'] !== null) {
+            $items = q_all('SELECT sa.id, sa.question_id, sa.assign_q_idx idx, sa.answer, sa.is_correct, sa.points, sa.feedback, aq.content, aq.points max_points
+                FROM submission_answers sa LEFT JOIN assign_questions aq ON aq.assignment_id=? AND aq.idx=sa.assign_q_idx
+                WHERE sa.submission_id=? ORDER BY sa.assign_q_idx', array($aid, $r['sub_id']));
+            foreach ($items as &$it) {
+                $it['id'] = (int)$it['id'];
+                $it['idx'] = (int)$it['idx'];
+                $it['is_correct'] = $it['is_correct'] !== null ? (int)$it['is_correct'] : null;
+                $it['points'] = $it['points'] !== null ? (float)$it['points'] : null;
+            }
+            unset($it);
+        }
         $out[] = array(
             'submission_id' => $r['sub_id'] !== null ? (int)$r['sub_id'] : null,
             'student_id' => (int)$r['sid'], 'name' => $r['name'], 'class_name' => $r['class_name'],
@@ -1436,6 +1467,7 @@ if (preg_match('#^/assignments/(\d+)/submissions$#', $path, $m)) {
             'files' => $files,
             'status' => sub_status($r['sub_id'] === null ? null : $r),
             'answers' => $ans,
+            'items' => $items,
         );
     }
     j(array('assignment' => $a, 'questions' => $qs, 'submissions' => $out));
@@ -1459,6 +1491,18 @@ if (preg_match('#^/submissions/(\d+)/grade$#', $path, $m)) {
         ->execute(array($sid, $sub['score'], $sub['feedback'] ?? '', $sub['question_scores'], $me['id'], $sub['graded_at']));
     db()->prepare('UPDATE submissions SET score=?, feedback=?, question_scores=?, graded_at=NOW() WHERE id=?')
         ->execute(array($score, mb_substr(trim($b['feedback'] ?? ''), 0, 1000), $qscJson, $sid));
+    // M3: chi tiet tung cau (items: [{idx, is_correct, points, feedback}])
+    if (is_array($b['items'] ?? null)) {
+        $upd = db()->prepare('UPDATE submission_answers SET is_correct=?, points=?, feedback=? WHERE submission_id=? AND assign_q_idx=?');
+        foreach ($b['items'] as $it) {
+            $idx = (int)($it['idx'] ?? 0);
+            if ($idx <= 0) continue;
+            $ic = array_key_exists('is_correct', $it) && $it['is_correct'] !== null ? ((int)(bool)$it['is_correct']) : null;
+            $pt = array_key_exists('points', $it) && $it['points'] !== null && $it['points'] !== '' ? (float)$it['points'] : null;
+            $fb = mb_substr(trim($it['feedback'] ?? ''), 0, 1000);
+            $upd->execute(array($ic, $pt, $fb, $sid, $idx));
+        }
+    }
     j(array('ok' => true, 'score' => $score));
 }
 

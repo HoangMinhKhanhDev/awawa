@@ -16,7 +16,29 @@ router = APIRouter()
 
 
 def my_class_ids(user_id):
-    return [r["class_id"] for r in get_db().q("SELECT class_id FROM class_members WHERE user_id=?", (user_id,))]
+    return [r["team_id"] for r in get_db().q(
+        "SELECT team_id FROM team_members WHERE user_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')",
+        (user_id,))]
+
+
+def resolve_assign_team(me, payload):
+    from fastapi import HTTPException
+    from auth import is_admin, teacher_coached_team_ids
+    tid = int(payload.team_id or 0)
+    if not tid:
+        tid = int(payload.class_id or 0)
+    if not tid:
+        if is_admin(me):
+            r = get_db().q1("SELECT id FROM teams ORDER BY id")
+            tid = int(r["id"]) if r else 0
+        else:
+            mine = teacher_coached_team_ids(me["id"])
+            tid = mine[0] if mine else 0
+    if not tid or not get_db().q1("SELECT 1 FROM teams WHERE id=?", (tid,)):
+        raise HTTPException(400, "Thieu doi tuyen.")
+    if not is_admin(me) and tid not in teacher_coached_team_ids(me["id"]):
+        raise HTTPException(403, "Ban khong phu trach doi nay.")
+    return tid
 
 
 def me_or_401(request: Request) -> dict:
@@ -47,11 +69,24 @@ def deadline_passed(deadline) -> bool:
         return False
 
 
-def notify_class(class_id, title, body, link, db):
+def notify_class(team_id, title, body, link, db):
     now = datetime.now().isoformat(timespec="seconds")
-    for r in db.q("SELECT user_id FROM class_members WHERE class_id=?", (class_id,)):
+    for r in db.q("SELECT user_id FROM team_members WHERE team_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')", (team_id,)):
         db.exec("INSERT INTO notifications (user_id, title, body, link, created_at) VALUES (?,?,?,?,?)",
                 (r["user_id"], title[:255], body[:1000], (link or "")[:500], now))
+
+
+def sync_submission_answers(sid: int, aid: int, amap: dict):
+    db = get_db()
+    aqs = db.q("SELECT id, idx, question_id FROM assign_questions WHERE assignment_id=? ORDER BY idx", (aid,))
+    if not aqs:
+        return
+    db.exec("DELETE FROM submission_answers WHERE submission_id=?", (sid,))
+    for aq in aqs:
+        idx = int(aq["idx"])
+        text = amap.get(idx, amap.get(str(idx), ""))
+        db.exec("INSERT INTO submission_answers (submission_id, question_id, assign_q_idx, answer) VALUES (?,?,?,?)",
+                (sid, aq["question_id"], idx, str(text or "")[:4000]))
 
 
 def sub_status(sub) -> str:
@@ -64,37 +99,40 @@ def sub_status(sub) -> str:
     return "draft"
 
 
-# ---------------- CLASSES ----------------
+# ---------------- CLASSES (alias teams — M2) ----------------
 @router.get("/api/classes")
 def list_classes(request: Request):
     me = me_or_401(request)
     db = get_db()
     if is_teacher(me):
-        return [dict(r) for r in db.q("SELECT * FROM classes ORDER BY name")]
+        return [dict(r) for r in db.q("SELECT id, name, join_code, created_at FROM teams ORDER BY name")]
     ids = my_class_ids(me["id"])
     if not ids:
         return []
     qmarks = ",".join("?" * len(ids))
-    return [dict(r) for r in db.q(f"SELECT * FROM classes WHERE id IN ({qmarks}) ORDER BY name", tuple(ids))]
+    return [dict(r) for r in db.q(f"SELECT id, name, join_code, created_at FROM teams WHERE id IN ({qmarks}) ORDER BY name", tuple(ids))]
 
 
 @router.post("/api/classes")
 def create_class(payload: ClassCreateIn, request: Request):
     db = get_db()
-    require_teacher(request)
+    me = require_teacher(request)
     name = (payload.name or "").strip()[:120]
     if not name:
         from fastapi import HTTPException
         raise HTTPException(400, "Thieu ten lop.")
     code = (payload.join_code or "").strip()[:16]
     if not code:
-        code = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
-    if db.q1("SELECT 1 FROM classes WHERE join_code=?", (code,)):
+        code = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+    if db.q1("SELECT 1 FROM teams WHERE join_code=?", (code,)):
         from fastapi import HTTPException
         raise HTTPException(400, "Ma lop da ton tai.")
     now = datetime.now().isoformat(timespec="seconds")
-    cur = db.exec("INSERT INTO classes (name, join_code, created_at) VALUES (?,?,?)", (name, code, now))
-    return {"id": cur.lastrowid, "name": name, "join_code": code}
+    cur = db.exec("INSERT INTO teams (name, join_code, created_at) VALUES (?,?,?)", (name, code, now))
+    tid = cur.lastrowid
+    db.exec("INSERT OR IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,?)",
+            (tid, me["id"], "coach", now))
+    return {"id": tid, "name": name, "join_code": code}
 
 
 @router.post("/api/classes/join")
@@ -106,20 +144,21 @@ def join_class(payload: ClassJoinIn, request: Request):
     code = (payload.join_code or "").strip()
     if not code:
         raise HTTPException(400, "Thieu ma lop.")
-    cl = get_db().q1("SELECT * FROM classes WHERE join_code=?", (code,))
+    cl = get_db().q1("SELECT id, name, join_code FROM teams WHERE join_code=?", (code,))
     if not cl:
         raise HTTPException(404, "Ma lop khong dung.")
     now = datetime.now().isoformat(timespec="seconds")
-    get_db().exec("INSERT OR IGNORE INTO class_members (class_id, user_id, joined_at) VALUES (?,?,?)",
-                  (cl["id"], me["id"], now))
-    return {"class": dict(cl)}
+    get_db().exec("INSERT OR IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,?)",
+                  (cl["id"], me["id"], "student", now))
+    get_db().exec("UPDATE students SET team=? WHERE id=?", (cl["name"], me["id"]))
+    return {"class": {"id": cl["id"], "name": cl["name"], "join_code": cl["join_code"]}}
 
 
 @router.get("/api/classes/{cid}/members")
 def class_members(cid: int, request: Request):
     require_teacher(request)
     rows = get_db().q(
-        "SELECT s.id, s.name, s.class_name, s.role, cm.joined_at FROM class_members cm JOIN students s ON s.id=cm.user_id WHERE cm.class_id=? ORDER BY s.name",
+        "SELECT s.id, s.name, s.class_name, s.role, tm.joined_at FROM team_members tm JOIN students s ON s.id=tm.user_id WHERE tm.team_id=? AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='') ORDER BY s.name",
         (cid,))
     out = []
     for r in rows:
@@ -131,22 +170,23 @@ def class_members(cid: int, request: Request):
 
 # ---------------- ASSIGNMENTS ----------------
 @router.get("/api/assignments")
-def list_assignments(request: Request, class_id: Optional[int] = None):
+def list_assignments(request: Request, class_id: Optional[int] = None, team_id: Optional[int] = None):
     me = me_or_401(request)
     db = get_db()
+    tid = team_id or class_id
     if is_teacher(me):
-        if class_id:
+        if tid:
             return [dict(r) for r in db.q(
-                "SELECT a.*, c.name class_name, t.name topic_name FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.class_id=? ORDER BY a.created_at DESC",
-                (class_id,))]
+                "SELECT a.*, tt.name class_name, t.name topic_name FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.team_id=? ORDER BY a.created_at DESC",
+                (tid,))]
         return [dict(r) for r in db.q(
-            "SELECT a.*, c.name class_name, t.name topic_name FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id ORDER BY a.created_at DESC")]
+            "SELECT a.*, tt.name class_name, t.name topic_name FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id ORDER BY a.created_at DESC")]
     ids = my_class_ids(me["id"])
     if not ids:
         return []
     qmarks = ",".join("?" * len(ids))
     rows = db.q(
-        f"SELECT a.*, c.name class_name, t.name topic_name FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.class_id IN ({qmarks}) ORDER BY a.created_at DESC",
+        f"SELECT a.*, tt.name class_name, t.name topic_name FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.team_id IN ({qmarks}) ORDER BY a.created_at DESC",
         tuple(ids))
     out = []
     for r in rows:
@@ -162,21 +202,18 @@ def list_assignments(request: Request, class_id: Optional[int] = None):
 @router.post("/api/assignments")
 def create_assignment(payload: AssignmentCreateIn, request: Request):
     db = get_db()
-    require_teacher(request)
+    me = require_teacher(request)
     title = (payload.title or "").strip()[:255]
     if not title:
         from fastapi import HTTPException
         raise HTTPException(400, "Thieu ten bai tap.")
-    if not payload.class_id or not db.q1("SELECT 1 FROM classes WHERE id=?", (payload.class_id,)):
-        from fastapi import HTTPException
-        raise HTTPException(400, "Thieu lop.")
+    tid = resolve_assign_team(me, payload)
     topic = (payload.topic_id or "").strip() or None
     deadline = (payload.deadline or "").strip() or None
     now = datetime.now().isoformat(timespec="seconds")
-    me = optional_session(request)
     cur = db.exec(
-        "INSERT INTO assignments (class_id, topic_id, title, description, deadline, created_by, created_at) VALUES (?,?,?,?,?,?,?)",
-        (payload.class_id, topic, title, (payload.description or "")[:2000], deadline, me["id"] if me else None, now))
+        "INSERT INTO assignments (team_id, topic_id, title, description, deadline, created_by, created_at) VALUES (?,?,?,?,?,?,?)",
+        (tid, topic, title, (payload.description or "")[:2000], deadline, me["id"] if me else None, now))
     aid = cur.lastrowid
     n = 0
     for i, q in enumerate(payload.questions or []):
@@ -187,16 +224,19 @@ def create_assignment(payload: AssignmentCreateIn, request: Request):
         pts = 1.0 if isinstance(q, str) else float((q or {}).get("points") or 1)
         if pts <= 0:
             pts = 1.0
-        db.exec("INSERT INTO assign_questions (assignment_id, idx, content, answer, points) VALUES (?,?,?,?,?)",
-                (aid, i + 1, content[:4000], ans[:4000], pts))
+        qid = None if isinstance(q, str) else (int((q or {}).get("question_id") or 0) or None)
+        if qid and not db.q1("SELECT 1 FROM questions WHERE id=?", (qid,)):
+            qid = None
+        db.exec("INSERT INTO assign_questions (assignment_id, idx, content, answer, points, question_id) VALUES (?,?,?,?,?,?)",
+                (aid, i + 1, content[:4000], ans[:4000], pts, qid))
         n += 1
     if n == 0:
         from fastapi import HTTPException
         raise HTTPException(400, "Can it nhat 1 cau hoi.")
-    # Thong bao cho hoc sinh trong lop
+    # Thong bao cho hoc sinh trong doi
     try:
         dline = f" · hạn {deadline}" if deadline else ""
-        notify_class(payload.class_id, f"Giao bài mới: {title}",
+        notify_class(tid, f"Giao bài mới: {title}",
                      (payload.description or f"Bài tập mới{dline}")[:900],
                      f"/assignments/{aid}", db)
     except Exception:
@@ -210,16 +250,16 @@ def get_assignment(aid: int, request: Request):
     me = me_or_401(request)
     db = get_db()
     a = db.q1(
-        "SELECT a.*, c.name class_name, t.name topic_name FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.id=?",
+        "SELECT a.*, tt.name class_name, t.name topic_name FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.id=?",
         (aid,))
     if not a:
         raise HTTPException(404, "Khong tim thay bai tap.")
     d = dict(a)
     teacher = is_teacher(me)
-    if not teacher and aid and int(a["class_id"]) not in my_class_ids(me["id"]):
+    if not teacher and aid and int(a["team_id"]) not in my_class_ids(me["id"]):
         raise HTTPException(403, "Ban khong o lop nay.")
     d["deadline_passed"] = deadline_passed(a.get("deadline"))
-    cols = "id, idx, content, points, answer" if teacher else "id, idx, content, points"
+    cols = "id, idx, content, points, question_id, answer" if teacher else "id, idx, content, points, question_id"
     d["questions"] = [dict(r) for r in db.q(
         f"SELECT {cols} FROM assign_questions WHERE assignment_id=? ORDER BY idx", (aid,))]
     if not teacher:
@@ -240,7 +280,7 @@ def submit_assignment(aid: int, payload: AssignmentSubmitIn, request: Request):
     a = db.q1("SELECT * FROM assignments WHERE id=?", (aid,))
     if not a:
         raise HTTPException(404, "Khong tim thay bai tap.")
-    if int(a["class_id"]) not in my_class_ids(me["id"]):
+    if int(a["team_id"]) not in my_class_ids(me["id"]):
         raise HTTPException(403, "Ban khong o lop nay.")
     if deadline_passed(a.get("deadline")):
         raise HTTPException(400, "Da qua han nop bai.")
@@ -265,6 +305,7 @@ def submit_assignment(aid: int, payload: AssignmentSubmitIn, request: Request):
         cur = db.exec("INSERT INTO submissions (assignment_id, student_id, answer, files, submitted_at) VALUES (?,?,?,?,?)",
                       (aid, me["id"], blob, files, now))
         sid = cur.lastrowid
+    sync_submission_answers(sid, aid, m)
     return {"id": sid, "status": "submitted"}
 
 
@@ -278,7 +319,7 @@ def draft_assignment(aid: int, payload: AssignmentSubmitIn, request: Request):
     a = db.q1("SELECT * FROM assignments WHERE id=?", (aid,))
     if not a:
         raise HTTPException(404, "Khong tim thay bai tap.")
-    if int(a["class_id"]) not in my_class_ids(me["id"]):
+    if int(a["team_id"]) not in my_class_ids(me["id"]):
         raise HTTPException(403, "Ban khong o lop nay.")
     existing = db.q1("SELECT id, score FROM submissions WHERE assignment_id=? AND student_id=?", (aid, me["id"]))
     if existing and existing["score"] is not None:
@@ -299,7 +340,21 @@ def draft_assignment(aid: int, payload: AssignmentSubmitIn, request: Request):
         cur = db.exec("INSERT INTO submissions (assignment_id, student_id, answer, files, submitted_at) VALUES (?,?,?,?,NULL)",
                       (aid, me["id"], blob, files))
         sid = cur.lastrowid
+    sync_submission_answers(sid, aid, m)
     return {"id": sid, "status": "draft"}
+
+
+def sync_submission_answers(sid: int, aid: int, amap: dict):
+    db = get_db()
+    aqs = db.q("SELECT id, idx, question_id FROM assign_questions WHERE assignment_id=? ORDER BY idx", (aid,))
+    if not aqs:
+        return
+    db.exec("DELETE FROM submission_answers WHERE submission_id=?", (sid,))
+    for aq in aqs:
+        idx = int(aq["idx"])
+        text = amap.get(idx, amap.get(str(idx), ""))
+        db.exec("INSERT INTO submission_answers (submission_id, question_id, assign_q_idx, answer) VALUES (?,?,?,?)",
+                (sid, aq["question_id"], idx, str(text or "")[:4000]))
 
 
 @router.get("/api/assignments/{aid}/submissions")
@@ -313,11 +368,11 @@ def list_submissions(aid: int, request: Request):
     rows = db.q(
         """SELECT s.id sid, s.name, s.class_name, sub.id sub_id, sub.answer, sub.score, sub.feedback,
                   sub.submitted_at, sub.graded_at, sub.question_scores, sub.files
-           FROM class_members cm JOIN students s ON s.id=cm.user_id
+           FROM team_members tm JOIN students s ON s.id=tm.user_id
            LEFT JOIN submissions sub ON sub.assignment_id=? AND sub.student_id=s.id
-           WHERE cm.class_id=? ORDER BY s.name""",
-        (aid, a["class_id"]))
-    qs = [dict(r) for r in db.q("SELECT idx, content, answer, points FROM assign_questions WHERE assignment_id=? ORDER BY idx", (aid,))]
+           WHERE tm.team_id=? AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='') ORDER BY s.name""",
+        (aid, a["team_id"]))
+    qs = [dict(r) for r in db.q("SELECT idx, content, answer, points, question_id FROM assign_questions WHERE assignment_id=? ORDER BY idx", (aid,))]
     out = []
     for r in rows:
         ans = json.loads(r["answer"]) if r["answer"] else None
@@ -326,6 +381,21 @@ def list_submissions(aid: int, request: Request):
             files = json.loads(r["files"]) if r["files"] else []
         except Exception:
             files = []
+        items = []
+        if r["sub_id"] is not None:
+            for it in db.q(
+                """SELECT sa.id, sa.question_id, sa.assign_q_idx idx, sa.answer, sa.is_correct, sa.points, sa.feedback,
+                          aq.content, aq.points max_points
+                   FROM submission_answers sa LEFT JOIN assign_questions aq
+                     ON aq.assignment_id=? AND aq.idx=sa.assign_q_idx
+                   WHERE sa.submission_id=? ORDER BY sa.assign_q_idx""",
+                (aid, r["sub_id"])):
+                d = dict(it)
+                d["id"] = int(d["id"])
+                d["idx"] = int(d["idx"])
+                d["is_correct"] = None if d["is_correct"] is None else int(d["is_correct"])
+                d["points"] = None if d["points"] is None else float(d["points"])
+                items.append(d)
         if r["sub_id"] is None:
             status = "todo"
         elif r["score"] is not None:
@@ -339,7 +409,7 @@ def list_submissions(aid: int, request: Request):
             "class_name": r["class_name"], "score": r["score"], "feedback": r["feedback"],
             "submitted_at": r["submitted_at"], "graded_at": r["graded_at"],
             "question_scores": qscores, "files": files,
-            "status": status, "answers": ans,
+            "status": status, "answers": ans, "items": items,
         })
     return {"assignment": dict(a), "questions": qs, "submissions": out}
 
@@ -361,6 +431,21 @@ def grade_submission(sid: int, payload: GradeIn, request: Request):
         (sid, sub["score"], sub["feedback"] or "", sub["question_scores"], me["id"], sub["graded_at"] or now))
     db.exec("UPDATE submissions SET score=?, feedback=?, question_scores=?, graded_at=? WHERE id=?",
             (score, (payload.feedback or "")[:1000], qs_json, now, sid))
+    # M3: chi tiet tung cau
+    if payload.items is not None:
+        for it in payload.items or []:
+            if not isinstance(it, dict):
+                continue
+            idx = int(it.get("idx") or 0)
+            if idx <= 0:
+                continue
+            ic = it.get("is_correct")
+            ic = None if ic is None else (1 if ic else 0)
+            pt = it.get("points")
+            pt = None if pt is None or pt == "" else float(pt)
+            fb = str(it.get("feedback") or "")[:1000]
+            db.exec("UPDATE submission_answers SET is_correct=?, points=?, feedback=? WHERE submission_id=? AND assign_q_idx=?",
+                    (ic, pt, fb, sid, idx))
     return {"ok": True, "score": score}
 
 
@@ -404,7 +489,7 @@ def me_results(request: Request):
     assigned = 0
     if ids:
         qmarks = ",".join("?" * len(ids))
-        assigned = db.q1(f"SELECT COUNT(*) c FROM assignments WHERE class_id IN ({qmarks})", tuple(ids))["c"]
+        assigned = db.q1(f"SELECT COUNT(*) c FROM assignments WHERE team_id IN ({qmarks})", tuple(ids))["c"]
     return {"results": results, "assigned_total": assigned}
 
 
@@ -419,7 +504,7 @@ def me_progress(request: Request):
     assigned = 0
     if ids:
         qmarks = ",".join("?" * len(ids))
-        assigned = db.q1(f"SELECT COUNT(*) c FROM assignments WHERE class_id IN ({qmarks})", tuple(ids))["c"]
+        assigned = db.q1(f"SELECT COUNT(*) c FROM assignments WHERE team_id IN ({qmarks})", tuple(ids))["c"]
     subs = db.q(
         """SELECT sub.score, sub.submitted_at, t.name topic_name FROM submissions sub
            JOIN assignments a ON a.id=sub.assignment_id

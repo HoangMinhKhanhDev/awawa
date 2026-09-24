@@ -132,7 +132,8 @@ class ClassCreateIn(BaseModel):
 class ClassJoinIn(BaseModel):
     join_code: str = ""
 class AssignmentCreateIn(BaseModel):
-    class_id: int
+    class_id: int = 0
+    team_id: Optional[int] = None
     topic_id: Optional[str] = None
     title: str = ""
     description: str = ""
@@ -145,6 +146,7 @@ class GradeIn(BaseModel):
     score: float
     feedback: str = ""
     question_scores: Optional[dict] = None
+    items: Optional[list] = None
 class LessonCreateIn(BaseModel):
     topic_id: str = ""
     title: str = ""
