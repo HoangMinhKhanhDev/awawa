@@ -1090,8 +1090,9 @@ if ($path === '/me/avatar' && $method === 'POST') {
     if (!is_dir($dir) && !mkdir($dir, 0755, true)) jerr('Không tạo thư mục avatars.', 500);
 
     $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
-    $rel = '/uploads/avatars/' . $me['id'] . '_' . time() . '.webp';
-    $abs = rtrim(UPLOAD_DIR, '/') . $rel;
+    $fname = $me['id'] . '_' . time() . '.webp';
+    $rel = '/uploads/avatars/' . $fname;           // URL goc
+    $abs = rtrim(UPLOAD_DIR, '/') . '/avatars/' . $fname; // duong dan o dis
 
     $converted = false;
     if (function_exists('imagewebp')) {
@@ -1126,7 +1127,7 @@ if ($path === '/me/avatar' && $method === 'POST') {
     // Xoa avatar cu (chi file cua minh)
     $old = q_one('SELECT avatar_url FROM students WHERE id=?', array($me['id']));
     if (!empty($old['avatar_url']) && strpos($old['avatar_url'], '/uploads/avatars/') === 0) {
-        $oldAbs = rtrim(UPLOAD_DIR, '/') . $old['avatar_url'];
+        $oldAbs = rtrim(UPLOAD_DIR, '/') . '/avatars/' . basename($old['avatar_url']);
         if (is_file($oldAbs)) @unlink($oldAbs);
     }
     db()->prepare('UPDATE students SET avatar_url=? WHERE id=?')->execute(array($rel, $me['id']));
@@ -1138,7 +1139,7 @@ if ($path === '/me/avatar' && $method === 'DELETE') {
     $me = session_student();
     $old = q_one('SELECT avatar_url FROM students WHERE id=?', array($me['id']));
     if (!empty($old['avatar_url']) && strpos($old['avatar_url'], '/uploads/avatars/') === 0) {
-        $oldAbs = rtrim(UPLOAD_DIR, '/') . $old['avatar_url'];
+        $oldAbs = rtrim(UPLOAD_DIR, '/') . '/avatars/' . basename($old['avatar_url']);
         if (is_file($oldAbs)) @unlink($oldAbs);
     }
     db()->prepare('UPDATE students SET avatar_url=NULL WHERE id=?')->execute(array($me['id']));
