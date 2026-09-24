@@ -581,17 +581,18 @@ if ($path === '/students') {
         $me = optional_session();
         if (!$me) j(array());
         $role = $me['role'] ?? 'student';
-        $sql = 'SELECT * FROM students s WHERE 1=1';
+        // JOIN phai truoc WHERE — nếu nối sau WHERE 1=1 sẽ lỗi SQL 500
+        $sql = 'SELECT DISTINCT s.* FROM students s';
         $p = array();
-        $join = '';
         if ($role === 'teacher') {
             $tids = teacher_coached_team_ids((int)$me['id']);
             if (!$tids) j(array());
             $in = implode(',', array_fill(0, count($tids), '?'));
-            $join = " JOIN team_members tm ON tm.user_id=s.id AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='')";
-            $sql .= $join . " AND tm.team_id IN ($in)";
+            $sql .= " JOIN team_members tm ON tm.user_id=s.id AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='') AND tm.team_id IN ($in)";
             $p = array_merge($p, $tids);
-        } elseif ($role !== 'admin' && $role !== 'super_admin') {
+        }
+        $sql .= ' WHERE 1=1';
+        if ($role !== 'teacher' && $role !== 'admin' && $role !== 'super_admin') {
             $sql .= ' AND s.id=?';
             $p[] = (int)$me['id'];
         }
