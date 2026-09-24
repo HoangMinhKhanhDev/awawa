@@ -1,5 +1,6 @@
 // Gọi tool Hostinger MCP bất kỳ: node scripts/hostinger-call.cjs <tool> '<json>'
 const { spawn } = require('child_process');
+const LIMIT = Number.parseInt(process.env.HOSTINGER_CALL_LIMIT || '6000', 10);
 const child = spawn('npx -y @hostinger/mcp', [], { stdio: ['pipe', 'pipe', 'ignore'], shell: true });
 let buf = '';
 let id = 0;
@@ -32,7 +33,7 @@ function notify(m) { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 
     const fs = require('fs');
     const payload = JSON.parse(fs.readFileSync(process.argv[2].slice(1), 'utf8'));
     const res = await send('tools/call', { name: payload.tool, arguments: payload.args });
-    console.log(JSON.stringify(res).slice(0, 6000));
+    console.log(JSON.stringify(res).slice(0, LIMIT));
     child.kill();
     setTimeout(() => process.exit(0), 500);
     return;
@@ -64,7 +65,7 @@ function notify(m) { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 
   } else {
     const res = await send('tools/call', { name: tool, arguments: args });
     const out = JSON.stringify(res);
-    console.log(out.slice(0, 6000));
+    console.log(out.slice(0, LIMIT));
   }
   child.kill();
   setTimeout(() => process.exit(0), 500);

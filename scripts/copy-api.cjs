@@ -41,3 +41,29 @@ if (fs.existsSync(databaseSource)) {
   fs.cpSync(databaseSource, path.join(dest, '..', 'database'), { recursive: true });
   console.log('[copy-api] copied database/');
 }
+
+function phpString(value) {
+  return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+const localConfig = {
+  DB_HOST: process.env.DB_HOST || 'localhost',
+  DB_NAME: process.env.DB_NAME || '',
+  DB_USER: process.env.DB_USER || '',
+  DB_PASS: process.env.DB_PASS || '',
+  API_TOKEN: process.env.API_TOKEN || '',
+  TEACHER_CODE: process.env.TEACHER_CODE || '',
+  AGNES_API_KEY: process.env.AGNES_API_KEY || '',
+  AGNES_BASE_URL: process.env.AGNES_BASE_URL || 'https://apihub.agnes-ai.com/v1',
+  AGNES_DEFAULT_MODEL: process.env.AGNES_DEFAULT_MODEL || 'agnes-2.5-flash',
+  PUBLIC_BASE: process.env.PUBLIC_BASE || '',
+};
+const missing = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASS'].filter((key) => !localConfig[key]);
+if (missing.length === 0) {
+  const entries = Object.entries(localConfig).filter(([, value]) => value !== '');
+  const body = entries.map(([key, value]) => `  '${key}' => ${phpString(value)},`).join('\n');
+  fs.writeFileSync(path.join(dest, 'local.php'), `<?php\nreturn array(\n${body}\n);\n`, 'utf8');
+  console.log('[copy-api] generated local.php from build env (keys: ' + entries.map(([key]) => key).join(',') + ')');
+} else {
+  console.log('[copy-api] local.php not generated (missing env: ' + missing.join(',') + ')');
+}

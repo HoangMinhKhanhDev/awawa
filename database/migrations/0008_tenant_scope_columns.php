@@ -128,16 +128,16 @@ return array(
             }
         }
         $checks = array(
-            array('school_years', 'SELECT t.`id` FROM `school_years` t LEFT JOIN `schools` s ON s.`id` = t.`school_id` WHERE t.`school_id` IS NOT NULL AND s.`id` IS NULL', 'school_not_found'),
-            array('grades', 'SELECT g.`id` FROM `grades` g LEFT JOIN `schools` s ON s.`id` = g.`school_id` LEFT JOIN `school_years` y ON y.`id` = g.`school_year_id` WHERE g.`school_id` IS NOT NULL AND (s.`id` IS NULL OR (g.`school_year_id` IS NOT NULL AND (y.`id` IS NULL OR y.`school_id` <> g.`school_id`)))', 'grade_tenant_mismatch'),
-            array('classes', 'SELECT c.`id` FROM `classes` c LEFT JOIN `schools` s ON s.`id` = c.`school_id` LEFT JOIN `school_years` y ON y.`id` = c.`school_year_id` LEFT JOIN `grades` g ON g.`id` = c.`grade_id` WHERE c.`school_id` IS NOT NULL AND (s.`id` IS NULL OR (c.`school_year_id` IS NOT NULL AND (y.`id` IS NULL OR y.`school_id` <> c.`school_id`)) OR (c.`grade_id` IS NOT NULL AND (g.`id` IS NULL OR g.`school_id` <> c.`school_id`)))', 'class_tenant_mismatch'),
-            array('subjects', 'SELECT t.`id` FROM `subjects` t LEFT JOIN `schools` s ON s.`id` = t.`school_id` WHERE t.`school_id` IS NOT NULL AND s.`id` IS NULL', 'school_not_found'),
-            array('teams', 'SELECT t.`id` FROM `teams` t LEFT JOIN `schools` s ON s.`id` = t.`school_id` LEFT JOIN `subjects` x ON x.`id` = t.`subject_id` AND x.`school_id` = t.`school_id` WHERE t.`school_id` IS NOT NULL AND (s.`id` IS NULL OR x.`id` IS NULL)', 'team_subject_tenant_mismatch'),
-            array('class_members', 'SELECT cm.`id` FROM `class_members` cm INNER JOIN `classes` c ON c.`id` = cm.`class_id` WHERE cm.`school_id` IS NULL OR c.`school_id` IS NULL OR cm.`school_id` <> c.`school_id`', 'class_membership_tenant_mismatch'),
-            array('team_members', 'SELECT tm.`id` FROM `team_members` tm INNER JOIN `teams` t ON t.`id` = tm.`team_id` WHERE tm.`school_id` IS NULL OR t.`school_id` IS NULL OR tm.`school_id` <> t.`school_id`', 'team_membership_tenant_mismatch'),
+            array('school_years', 'SELECT t.`id` AS entity_id FROM `school_years` t LEFT JOIN `schools` s ON s.`id` = t.`school_id` WHERE t.`school_id` IS NOT NULL AND s.`id` IS NULL', 'school_not_found'),
+            array('grades', 'SELECT g.`id` AS entity_id FROM `grades` g LEFT JOIN `schools` s ON s.`id` = g.`school_id` LEFT JOIN `school_years` y ON y.`id` = g.`school_year_id` WHERE g.`school_id` IS NOT NULL AND (s.`id` IS NULL OR (g.`school_year_id` IS NOT NULL AND (y.`id` IS NULL OR y.`school_id` <> g.`school_id`)))', 'grade_tenant_mismatch'),
+            array('classes', 'SELECT c.`id` AS entity_id FROM `classes` c LEFT JOIN `schools` s ON s.`id` = c.`school_id` LEFT JOIN `school_years` y ON y.`id` = c.`school_year_id` LEFT JOIN `grades` g ON g.`id` = c.`grade_id` WHERE c.`school_id` IS NOT NULL AND (s.`id` IS NULL OR (c.`school_year_id` IS NOT NULL AND (y.`id` IS NULL OR y.`school_id` <> c.`school_id`)) OR (c.`grade_id` IS NOT NULL AND (g.`id` IS NULL OR g.`school_id` <> c.`school_id`)))', 'class_tenant_mismatch'),
+            array('subjects', 'SELECT t.`id` AS entity_id FROM `subjects` t LEFT JOIN `schools` s ON s.`id` = t.`school_id` WHERE t.`school_id` IS NOT NULL AND s.`id` IS NULL', 'school_not_found'),
+            array('teams', 'SELECT t.`id` AS entity_id FROM `teams` t LEFT JOIN `schools` s ON s.`id` = t.`school_id` LEFT JOIN `subjects` x ON x.`id` = t.`subject_id` AND x.`school_id` = t.`school_id` WHERE t.`school_id` IS NOT NULL AND (s.`id` IS NULL OR x.`id` IS NULL)', 'team_subject_tenant_mismatch'),
+            array('class_members', 'SELECT CONCAT(cm.`class_id`, \':\', cm.`user_id`) AS entity_id FROM `class_members` cm INNER JOIN `classes` c ON c.`id` = cm.`class_id` WHERE cm.`school_id` IS NULL OR c.`school_id` IS NULL OR cm.`school_id` <> c.`school_id`', 'class_membership_tenant_mismatch'),
+            array('team_members', 'SELECT CONCAT(tm.`team_id`, \':\', tm.`user_id`, \':\', tm.`member_role`) AS entity_id FROM `team_members` tm INNER JOIN `teams` t ON t.`id` = tm.`team_id` WHERE tm.`school_id` IS NULL OR t.`school_id` IS NULL OR tm.`school_id` <> t.`school_id`', 'team_membership_tenant_mismatch'),
         );
         if (MigrationSchema::tableExists($pdo, 'team_memberships')) {
-            $checks[] = array('team_memberships', 'SELECT m.`id` FROM `team_memberships` m INNER JOIN `teams` t ON t.`id` = m.`team_id` WHERE m.`school_id` IS NULL OR t.`school_id` IS NULL OR m.`school_id` <> t.`school_id`', 'team_membership_tenant_mismatch');
+            $checks[] = array('team_memberships', 'SELECT m.`id` AS entity_id FROM `team_memberships` m INNER JOIN `teams` t ON t.`id` = m.`team_id` WHERE m.`school_id` IS NULL OR t.`school_id` IS NULL OR m.`school_id` <> t.`school_id`', 'team_membership_tenant_mismatch');
         }
         foreach ($checks as $check) {
             $rows = $pdo->query($check[1]);
@@ -145,7 +145,7 @@ return array(
                 throw new RuntimeException($check[0] . ' tenant integrity could not be checked.');
             }
             while (($row = $rows->fetch(PDO::FETCH_ASSOC)) !== false) {
-                $quarantine->execute(array('0008_tenant_scope_columns', $check[0], (string) $row['id'], $check[2], json_encode($row, JSON_UNESCAPED_UNICODE)));
+                $quarantine->execute(array('0008_tenant_scope_columns', $check[0], (string) $row['entity_id'], $check[2], json_encode($row, JSON_UNESCAPED_UNICODE)));
             }
         }
     },
