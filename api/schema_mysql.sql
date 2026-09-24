@@ -115,14 +115,18 @@ CREATE TABLE IF NOT EXISTS grades (
 
 CREATE TABLE IF NOT EXISTS teams (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  school_id INT NULL,
   school_year_id INT NULL,
   grade_id INT NULL,
   subject_id VARCHAR(64) NULL,
   name VARCHAR(120) NOT NULL,
   description VARCHAR(500) DEFAULT '',
+  join_code VARCHAR(16) NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_teams_code (join_code),
   INDEX idx_t_year (school_year_id),
-  INDEX idx_t_subject (subject_id)
+  INDEX idx_t_subject (subject_id),
+  INDEX idx_t_school (school_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS team_members (
@@ -166,14 +170,17 @@ CREATE TABLE IF NOT EXISTS attempts (
 
 CREATE TABLE IF NOT EXISTS assignments (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  class_id INT NOT NULL,
+  class_id INT NULL,
+  team_id INT NULL,
   topic_id VARCHAR(64) NULL,
   title VARCHAR(255) NOT NULL,
   description TEXT NULL,
   deadline DATETIME NULL,
   created_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_as_class (class_id)
+  INDEX idx_as_class (class_id),
+  INDEX idx_as_team (team_id),
+  CONSTRAINT fk_a_team FOREIGN KEY (team_id) REFERENCES teams (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS assign_questions (
