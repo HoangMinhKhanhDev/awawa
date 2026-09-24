@@ -224,6 +224,44 @@ export default function Profile() {
   const loginId = student?.phone || student?.email || '—'
   const role = roleLabel(student?.role)
 
+  // Chon anh -> resize vuong 256 -> WebP (giam trong luong) -> upload
+  const handleAvatar = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setBusy(true)
+    try {
+      const webp = await fileToWebp(file, 256, 0.82)
+      const fd = new FormData()
+      fd.append('avatar', webp, 'avatar.webp')
+      const r = await api.uploadAvatar(fd)
+      if (r?.student) setStudent(r.student)
+      toast('Đã cập nhật ảnh đại diện.')
+    } catch (err) { toast(cleanMsg(err), 'err') }
+    setBusy(false)
+  }
+
+  async function fileToWebp(file, maxSide, quality) {
+    const bitmap = await createImageBitmap(file)
+    const side = Math.min(maxSide, Math.max(bitmap.width, bitmap.height))
+    const canvas = document.createElement('canvas')
+    // cat vuong giua anh
+    const sx = Math.max(0, (bitmap.width - Math.min(bitmap.width, bitmap.height)) / 2)
+    const sy = Math.max(0, (bitmap.height - Math.min(bitmap.width, bitmap.height)) / 2)
+    const sw = Math.min(bitmap.width, bitmap.height)
+    const sh = sw
+    canvas.width = side
+    canvas.height = side
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, side, side)
+    bitmap.close?.()
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Không chuyển được WebP.'))), 'image/webp', quality)
+    })
+    if (!blob) throw new Error('Trình duyệt không hỗ trợ WebP.')
+    return new File([blob], 'avatar.webp', { type: 'image/webp' })
+  }
+
   if (!student) {
     return (
       <div className="grid">
@@ -307,7 +345,18 @@ export default function Profile() {
     <div className="grid">
       <div className="card">
         <div className="row" style={{ gap: 16, alignItems: 'center' }}>
-          <div className="avatar" aria-hidden="true">{initial}</div>
+          <label className="avatar avatar-edit" title="Đổi ảnh đại diện (tự chuyển WebP)">
+            {student.avatar_url
+              ? <img src={student.avatar_url} alt="" width={64} height={64} />
+              : <span>{initial}</span>}
+            <input
+              type="file"
+              accept="image/*"
+              hidden
+              aria-label="Chọn ảnh đại diện"
+              onChange={(e) => handleAvatar(e)}
+            />
+          </label>
           <div style={{ minWidth: 0, flex: 1 }}>
             <h1 style={{ margin: 0 }}>{student.name}</h1>
             <div className="small muted" style={{ marginTop: 2 }}>

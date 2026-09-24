@@ -39,8 +39,8 @@ export default function Progress() {
   const myId = me?.id
   const pct = (x) => `${Math.round((x || 0) * 100)}%`
 
-  const boardHeaders = ['#', 'Họ tên', 'Lớp', 'Đội', 'Lượt', 'Cao nhất', 'TB']
-  const boardRows = board.map((r) => [r.rank, r.name, r.class_name || '', r.team || '', r.attempts, pct(r.best), pct(r.avg)])
+  const boardHeaders = ['#', 'Họ tên', 'Lớp', 'Đội', 'Lượt', 'Cao nhất', 'TB', 'Điểm BT']
+  const boardRows = board.map((r) => [r.rank, r.name, r.class_name || '', r.team || '', r.attempts, pct(r.best), pct(r.avg), r.assign_avg != null ? r.assign_avg : '—'])
 
   const doExcel = () => exportCsv(`bang-xep-hang-${mode}-${team || 'tat-ca'}`, boardHeaders, boardRows)
   const doPdf = () => printPdf(`Bảng xếp hạng — ${mode === 'exam' ? 'Thi thử' : 'Luyện tập'}${team ? ` · ${team}` : ''}`, boardHeaders, boardRows,
@@ -71,6 +71,7 @@ export default function Progress() {
             <div className="subnav" role="tablist" aria-label="Chế độ xếp hạng">
               <button role="tab" aria-selected={mode === 'exam'} className={mode === 'exam' ? 'on' : ''} onClick={() => setMode('exam')}>Thi thử</button>
               <button role="tab" aria-selected={mode === 'practice'} className={mode === 'practice' ? 'on' : ''} onClick={() => setMode('practice')}>Luyện tập</button>
+              <button role="tab" aria-selected={mode === 'assign'} className={mode === 'assign' ? 'on' : ''} onClick={() => setMode('assign')}>Bài tập</button>
             </div>
             <select className="select" style={{ width: 'auto' }} aria-label="Lọc theo đội" value={team} onChange={(e) => setTeam(e.target.value)}>
               <option value="">Tất cả đội</option>
@@ -84,7 +85,7 @@ export default function Progress() {
             )}
           </div>
         </div>
-        <div className="small muted" style={{ marginTop: 4 }}>Chỉ tính lượt thi của tài khoản đăng nhập · xếp theo % cao nhất.</div>
+        <div className="small muted" style={{ marginTop: 4 }}>HS thấy tên nhau · xếp theo % thi cao nhất · Điểm BT = điểm trung bình bài tập (thang 10).</div>
         {board.length === 0 ? (
           <div className="empty" style={{ marginTop: 10 }}>Chưa có ai lên bảng — thi một lượt để giành hạng 1.</div>
         ) : (
@@ -92,13 +93,18 @@ export default function Progress() {
             {board.map((r) => (
               <div key={r.student_id} className={`board-row${r.student_id === myId ? ' me' : ''}`}>
                 <span className={`rank${r.rank <= 3 ? ` r${r.rank}` : ''}`}>{r.rank}</span>
-                <div>
+                {r.avatar_url
+                  ? <img className="avatar avatar-xs" src={r.avatar_url} alt="" width={36} height={36} />
+                  : <span className="avatar avatar-xs" aria-hidden="true">{(r.name || '?').trim().charAt(0).toUpperCase()}</span>}
+                <div style={{ minWidth: 0 }}>
                   <b>{r.name}</b>
-                  <div className="small muted">{r.class_name || ''}{r.team ? ` · ${r.team}` : ''} · {r.attempts} lượt</div>
+                  <div className="small muted">{r.class_name || '—'}{r.team ? ` · ${r.team}` : ''} · {r.attempts} lượt</div>
                 </div>
                 <div className="board-score">
                   <b>{pct(r.best)}</b>
-                  <div className="small muted">TB {pct(r.avg)}</div>
+                  <div className="small muted">
+                    TB {pct(r.avg)}{r.assign_avg != null ? ` · BT ${r.assign_avg}` : ''}
+                  </div>
                 </div>
               </div>
             ))}

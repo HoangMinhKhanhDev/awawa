@@ -499,12 +499,23 @@ if ($method === 'GET' && $path === '/attempts') {
 }
 
 // ---------------- LEADERBOARD ----------------
-// Chỉ lượt thi của tài khoản đăng nhập. Xếp theo % cao nhất → trung bình → số lượt.
+// HS thay thay nhau: ten, lop, diem. Chi luot cua tai khoan dang dang nhap.
 if ($method === 'GET' && $path === '/stats/leaderboard') {
     $mode = $_GET['mode'] ?? 'exam';
     $team = trim($_GET['team'] ?? '');
     $limit = max(1, min((int)($_GET['limit'] ?? 50), 100));
-    $sql = "SELECT st.id, st.name, st.class_name, st.team, COUNT(a.id) n, MAX(a.accuracy) best, AVG(a.accuracy) avg, MAX(a.created_at) last_at FROM attempts a JOIN students st ON st.id=a.student_id WHERE a.student_id IS NOT NULL AND a.total > 0 AND COALESCE(st.role,'student') NOT IN ('teacher','admin','super_admin') AND COALESCE(st.active,1)=1";
+    $sql = "SELECT st.id, st.name, st.class_name, st.team, st.avatar_url,
+        COUNT(a.id) n, MAX(a.accuracy) best, AVG(a.accuracy) avg, MAX(a.created_at) last_at,
+        sc.aavg assign_avg, sc.an assign_n
+        FROM attempts a
+        JOIN students st ON st.id=a.student_id
+        LEFT JOIN (
+            SELECT student_id, AVG(score) aavg, COUNT(*) an
+            FROM submissions WHERE score IS NOT NULL GROUP BY student_id
+        ) sc ON sc.student_id = st.id
+        WHERE a.student_id IS NOT NULL AND a.total > 0
+          AND COALESCE(st.role,'student') NOT IN ('teacher','admin','super_admin')
+          AND COALESCE(st.active,1)=1";
     $p = array();
     if ($mode === 'exam' || $mode === 'practice') { $sql .= ' AND a.mode=?'; $p[] = $mode; }
     if ($team !== '') { $sql .= ' AND st.team=?'; $p[] = $team; }
@@ -514,9 +525,33 @@ if ($method === 'GET' && $path === '/stats/leaderboard') {
         $rank++;
         $out[] = array(
             'rank' => $rank, 'student_id' => (int)$r['id'], 'name' => $r['name'],
-            'class_name' => $r['class_name'], 'team' => $r['team'], 'attempts' => (int)$r['n'],
-            'best' => round((float)$r['best'], 4), 'avg' => round((float)$r['avg'], 4), 'last_at' => $r['last_at'],
+            'class_name' => $r['class_name'], 'team' => $r['team'],
+            'avatar_url' => $r['avatar_url'] ?? null,
+            'attempts' => (int)$r['n'],
+            'best' => round((float)$r['best'], 4), 'avg' => round((float)$r['avg'], 4),
+            'assign_avg' => $r['assign_avg'] !== null ? round((float)$r['assign_avg'], 1) : null,
+            'assign_n' => $r['assign_n'] !== null ? (int)$r['assign_n'] : 0,
+            'last_at' => $r['last_at'],
         );
+    }
+    // Neu chua ai thi -> lay bang diem bai tap (dang nop/cham) de HS van thay nhau
+    if (!$out && ($mode === 'assign' || $mode === 'all')) {
+        $rows = q_all("SELECT st.id, st.name, st.class_name, st.team, st.avatar_url,
+            AVG(sub.score) best, AVG(sub.score) avg, COUNT(*) n, MAX(sub.graded_at) last_at
+            FROM submissions sub JOIN students st ON st.id=sub.student_id
+            WHERE sub.score IS NOT NULL AND COALESCE(st.role,'student') NOT IN ('teacher','admin','super_admin')
+            GROUP BY st.id ORDER BY best DESC LIMIT " . $limit);
+        foreach ($rows as $r) {
+            $rank++;
+            $out[] = array(
+                'rank' => $rank, 'student_id' => (int)$r['id'], 'name' => $r['name'],
+                'class_name' => $r['class_name'], 'team' => $r['team'],
+                'avatar_url' => $r['avatar_url'] ?? null, 'attempts' => (int)$r['n'],
+                'best' => round((float)$r['best'] / 10, 4), 'avg' => round((float)$r['avg'] / 10, 4),
+                'assign_avg' => round((float)$r['best'], 1), 'assign_n' => (int)$r['n'],
+                'last_at' => $r['last_at'],
+            );
+        }
     }
     j(array('mode' => $mode, 'board' => $out));
 }
@@ -1040,6 +1075,74 @@ if ($method === 'POST' && $path === '/uploads') {
         $base = ($https ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? '');
     }
     j(array('url' => rtrim($base, '/') . '/uploads/' . $name));
+}
+
+// ---------------- AVATAR (luu webp) ----------------
+// Client nen resize + chuyen webp truoc khi gui; server van chong ve va luu .webp
+if ($path === '/me/avatar' && $method === 'POST') {
+    $me = session_student();
+    if (empty($_FILES['avatar']) || $_FILES['avatar']['error'] !== UPLOAD_ERR_OK) jerr('Thiếu file ảnh.');
+    $f = $_FILES['avatar'];
+    if ($f['size'] > 2 * 1024 * 1024) jerr('Ảnh tối đa 2MB.');
+    $info = @getimagesize($f['tmp_name']);
+    if ($info === false) jerr('File không phải ảnh hợp lệ.');
+    $dir = rtrim(UPLOAD_DIR, '/') . '/avatars';
+    if (!is_dir($dir) && !mkdir($dir, 0755, true)) jerr('Không tạo thư mục avatars.', 500);
+
+    $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
+    $rel = '/uploads/avatars/' . $me['id'] . '_' . time() . '.webp';
+    $abs = rtrim(UPLOAD_DIR, '/') . $rel;
+
+    $converted = false;
+    if (function_exists('imagewebp')) {
+        $src = null;
+        $type = $info[2];
+        if ($type === IMAGETYPE_JPEG && function_exists('imagecreatefromjpeg')) $src = @imagecreatefromjpeg($f['tmp_name']);
+        elseif ($type === IMAGETYPE_PNG && function_exists('imagecreatefrompng')) $src = @imagecreatefrompng($f['tmp_name']);
+        elseif ($type === IMAGETYPE_GIF && function_exists('imagecreatefromgif')) $src = @imagecreatefromgif($f['tmp_name']);
+        elseif ($type === IMAGETYPE_WEBP && function_exists('imagecreatefromwebp')) $src = @imagecreatefromwebp($f['tmp_name']);
+        if ($src) {
+            $w = imagesx($src); $h = imagesy($src);
+            $max = 256;
+            if ($w > $max || $h > $max) {
+                $ratio = min($max / $w, $max / $h);
+                $nw = max(1, (int)round($w * $ratio));
+                $nh = max(1, (int)round($h * $ratio));
+                $dst = imagecreatetruecolor($nw, $nh);
+                imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
+                imagedestroy($src);
+                $src = $dst;
+            }
+            if (imagewebp($src, $abs, 82)) $converted = true;
+            imagedestroy($src);
+        }
+    }
+    if (!$converted) {
+        // Khong GD/webp: chi chap nhan neu client da gui .webp
+        if ($ext !== 'webp') jerr('Máy chủ không convert được ảnh — hãy tải lên dạng .webp (app tự chuyển khi chọn ảnh).', 500);
+        if (!move_uploaded_file($f['tmp_name'], $abs)) jerr('Không lưu được file.', 500);
+    }
+
+    // Xoa avatar cu (chi file cua minh)
+    $old = q_one('SELECT avatar_url FROM students WHERE id=?', array($me['id']));
+    if (!empty($old['avatar_url']) && strpos($old['avatar_url'], '/uploads/avatars/') === 0) {
+        $oldAbs = rtrim(UPLOAD_DIR, '/') . $old['avatar_url'];
+        if (is_file($oldAbs)) @unlink($oldAbs);
+    }
+    db()->prepare('UPDATE students SET avatar_url=? WHERE id=?')->execute(array($rel, $me['id']));
+    $fresh = q_one('SELECT * FROM students WHERE id=?', array($me['id']));
+    j(array('ok' => true, 'avatar_url' => $rel, 'student' => public_student($fresh)));
+}
+
+if ($path === '/me/avatar' && $method === 'DELETE') {
+    $me = session_student();
+    $old = q_one('SELECT avatar_url FROM students WHERE id=?', array($me['id']));
+    if (!empty($old['avatar_url']) && strpos($old['avatar_url'], '/uploads/avatars/') === 0) {
+        $oldAbs = rtrim(UPLOAD_DIR, '/') . $old['avatar_url'];
+        if (is_file($oldAbs)) @unlink($oldAbs);
+    }
+    db()->prepare('UPDATE students SET avatar_url=NULL WHERE id=?')->execute(array($me['id']));
+    j(array('ok' => true));
 }
 
 // ================= MVP: LOP / BAI TAP / CHAM DIEM =================

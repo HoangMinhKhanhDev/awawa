@@ -404,8 +404,23 @@ table.tbl tr:hover td { background: var(--line-soft); }
   display: flex; align-items: center; justify-content: center;
   color: var(--accent-ink); font-weight: 800; font-size: 26px; flex: none;
   letter-spacing: -0.02em;
+  overflow: hidden; object-fit: cover;
 }
-@media (max-width: 900px) { .avatar { width: 52px; height: 52px; font-size: 20px; } }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar-edit { cursor: pointer; position: relative; transition: box-shadow 0.15s; }
+.avatar-edit:hover, .avatar-edit:focus-within {
+  box-shadow: 0 0 0 3px var(--accent-line);
+}
+.avatar-edit::after {
+  content: "Đổi ảnh"; position: absolute; inset: auto 0 0 0;
+  font-size: 10px; font-weight: 600; text-align: center;
+  background: rgba(23, 33, 47, 0.55); color: #fff;
+  padding: 2px 0; opacity: 0; transition: opacity 0.15s;
+}
+.avatar-edit:hover::after, .avatar-edit:focus-within::after { opacity: 1; }
+.avatar-xs { width: 36px; height: 36px; font-size: 15px; border-width: 1.5px; flex: none; }
+.board-row .avatar-xs { margin-right: 2px; }
+@media (max-width: 900px) { .avatar { width: 52px; height: 52px; font-size: 20px; } .avatar-edit::after { font-size: 9px; } }
 
 /* ===== Badge ===== */
 .badge {

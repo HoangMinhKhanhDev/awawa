@@ -119,6 +119,13 @@ const authMethods = (call) => ({
   bulkStudents: (payload) => call('/students/bulk', { method: 'POST', body: JSON.stringify(payload) }),
   permissions: () => call('/permissions'),
   updatePermissions: (payload) => call('/permissions', { method: 'PUT', body: JSON.stringify(payload) }),
+  // Avatar: fd = FormData { avatar: File webp }
+  uploadAvatar: async (fd) => {
+    const r = await call('/me/avatar', { method: 'POST', body: fd })
+    if (r?.student) setSession(localStorage.getItem('sessionToken'), r.student)
+    return r
+  },
+  removeAvatar: () => call('/me/avatar', { method: 'DELETE' }),
 })
 
 // Cấu trúc nhà trường (Phase 1a) — admin: CRUD; staff: đọc
@@ -222,10 +229,12 @@ async function aiStream(url, payload, onEvent, signal) {
 async function req(path, options = {}) {
   const base = await getBackendUrlLegacy()
   const extra = /ngrok/i.test(base) ? { 'ngrok-skip-browser-warning': 'true' } : {}
-  // Spread options TRƯỚC headers để options.headers của caller không nuốt Content-Type/token
+  const isForm = typeof FormData !== 'undefined' && options.body instanceof FormData
+  const headers = { ...extra, ...sessionHeaders(), ...(options.headers || {}) }
+  if (!isForm && !(options.headers && 'Content-Type' in options.headers)) headers['Content-Type'] = 'application/json'
   const res = await fetch(`${base}${path}`, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...extra, ...sessionHeaders(), ...(options.headers || {}) },
+    headers,
     signal: options.signal || AbortSignal.timeout?.(30000),
   })
   if (!res.ok) {
