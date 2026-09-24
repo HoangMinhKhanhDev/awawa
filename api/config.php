@@ -504,7 +504,7 @@ function agnes_chat_stream($messages, $model, $emit, $max_tokens = 4000, $temper
         CURLOPT_POSTFIELDS => $payload,
         CURLOPT_TIMEOUT => 120,
         CURLOPT_CONNECTTIMEOUT => 15,
-        CURLOPT_FLUSH => true,
+        // KHONG dung CURLOPT_FLUSH — khong co tren PHP Hostinger (PHP 8 loi undefined constant)
     ));
     $ok = curl_exec($ch);
     $err = curl_error($ch);
