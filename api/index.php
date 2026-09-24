@@ -1247,10 +1247,6 @@ if (preg_match('#^/classes/(\d+)/members$#', $path, $m)) {
         q_all("SELECT s.id, s.name, s.class_name, s.role, tm.joined_at FROM team_members tm JOIN students s ON s.id=tm.user_id WHERE tm.team_id=? AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='') ORDER BY s.name", array($cid))));
 }
 
-    j(array_map(function ($r) { unset($r['password_hash']); return $r; },
-        q_all("SELECT s.id, s.name, s.class_name, s.role, tm.joined_at FROM team_members tm JOIN students s ON s.id=tm.user_id WHERE tm.team_id=? AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='') ORDER BY s.name", array($cid))));
-}
-
 // Team id cho assignment: nhan team_id hoac class_id (legacy), kie' m tra GV phai coach/admin
 function resolve_assign_team($me, $b) {
     $tid = (int)($b['team_id'] ?? 0);
