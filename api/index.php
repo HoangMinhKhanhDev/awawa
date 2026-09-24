@@ -1147,11 +1147,26 @@ if ($path === '/me/avatar' && $method === 'DELETE') {
 }
 
 // ================= MVP: LOP / BAI TAP / CHAM DIEM =================
+// M2: classes -> teams. "class" o endpoints la alias cua team.
+// my_class_ids = teams HS dang la thanh vien (member_role='student').
 
 function my_class_ids($user_id) {
     $ids = array();
-    foreach (q_all('SELECT class_id FROM class_members WHERE user_id=?', array($user_id)) as $r) $ids[] = (int)$r['class_id'];
+    foreach (q_all("SELECT team_id FROM team_members WHERE user_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')", array($user_id)) as $r) {
+        $ids[] = (int)$r['team_id'];
+    }
     return $ids;
+}
+
+// teacher admin coi duoc tat ca; teacher thuong chi to chuc doi minh
+function assign_team_ids_visible($me) {
+    if (!$me) return array();
+    if (is_admin($me)) {
+        $ids = array();
+        foreach (q_all('SELECT id FROM teams ORDER BY id') as $r) $ids[] = (int)$r['id'];
+        return $ids;
+    }
+    return teacher_coached_team_ids((int)$me['id']);
 }
 
 function require_me() {
@@ -1179,16 +1194,17 @@ function deadline_passed($deadline) {
     return $t !== false && $t < time();
 }
 
-// ---------------- CLASSES ----------------
+// ---------------- CLASS (ALIAS TEAM) — M2: /classes hoc = /teams ----------------
 if ($path === '/classes' && $method === 'GET') {
+    // Alias /classes -> /teams (M2)
     $me = require_me();
     if (is_role_teacher($me)) {
-        j(q_all('SELECT * FROM classes ORDER BY name'));
+        j(q_all('SELECT id, name, join_code, created_at FROM teams ORDER BY name'));
     }
     $ids = my_class_ids($me['id']);
     if (!$ids) { j(array()); }
     $in = implode(',', array_fill(0, count($ids), '?'));
-    j(q_all("SELECT * FROM classes WHERE id IN ($in) ORDER BY name", $ids));
+    j(q_all("SELECT id, name, join_code, created_at FROM teams WHERE id IN ($in) ORDER BY name", $ids));
 }
 
 if ($path === '/classes' && $method === 'POST') {
@@ -1198,10 +1214,14 @@ if ($path === '/classes' && $method === 'POST') {
     $name = mb_substr(trim($b['name'] ?? ''), 0, 120);
     if ($name === '') jerr('Thiếu tên lớp.');
     $code = mb_substr(trim($b['join_code'] ?? ''), 0, 16);
-    if ($code === '') $code = strtoupper(substr(md5(uniqid('', true)), 0, 8));
-    if (q_one('SELECT 1 FROM classes WHERE join_code=?', array($code))) jerr('Mã lớp đã tồn tại.');
-    db()->prepare('INSERT INTO classes (name, join_code) VALUES (?,?)')->execute(array($name, $code));
-    j(array('id' => (int)db()->lastInsertId(), 'name' => $name, 'join_code' => $code));
+    if ($code === '') $code = strtoupper(substr(md5(uniqid('', true)), 0, 6));
+    if (q_one('SELECT 1 FROM teams WHERE join_code=?', array($code))) jerr('Mã lớp đã tồn tại.');
+    db()->prepare('INSERT INTO teams (name, join_code, school_id) VALUES (?,?,1)')->execute(array($name, $code));
+    $tid = (int)db()->lastInsertId();
+    // Creator la coach cua team
+    db()->prepare("INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())")
+        ->execute(array($tid, $me['id'], 'coach'));
+    j(array('id' => $tid, 'name' => $name, 'join_code' => $code));
 }
 
 if ($path === '/classes/join' && $method === 'POST') {
@@ -1210,10 +1230,12 @@ if ($path === '/classes/join' && $method === 'POST') {
     $b = body();
     $code = trim($b['join_code'] ?? '');
     if ($code === '') jerr('Thiếu mã lớp.');
-    $cl = q_one('SELECT * FROM classes WHERE join_code=?', array($code));
+    $cl = q_one('SELECT id, name, join_code FROM teams WHERE join_code=?', array($code));
     if (!$cl) jerr('Mã lớp không đúng.', 404);
-    db()->prepare('INSERT IGNORE INTO class_members (class_id, user_id) VALUES (?,?)')->execute(array($cl['id'], $me['id']));
-    j(array('class' => $cl));
+    db()->prepare("INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())")
+        ->execute(array($cl['id'], $me['id'], 'student'));
+    db()->prepare('UPDATE students SET team=? WHERE id=?')->execute(array($cl['name'], $me['id']));
+    j(array('class' => array('id' => $cl['id'], 'name' => $cl['name'], 'join_code' => $cl['join_code'])));
 }
 
 if (preg_match('#^/classes/(\d+)/members$#', $path, $m)) {
@@ -1222,21 +1244,46 @@ if (preg_match('#^/classes/(\d+)/members$#', $path, $m)) {
     if (!is_role_teacher($me)) jerr('Khu vực giáo viên.', 403);
     $cid = (int)$m[1];
     j(array_map(function ($r) { unset($r['password_hash']); return $r; },
-        q_all('SELECT s.id, s.name, s.class_name, s.role, cm.joined_at FROM class_members cm JOIN students s ON s.id=cm.user_id WHERE cm.class_id=? ORDER BY s.name', array($cid))));
+        q_all("SELECT s.id, s.name, s.class_name, s.role, tm.joined_at FROM team_members tm JOIN students s ON s.id=tm.user_id WHERE tm.team_id=? AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='') ORDER BY s.name", array($cid))));
+}
+
+    j(array_map(function ($r) { unset($r['password_hash']); return $r; },
+        q_all("SELECT s.id, s.name, s.class_name, s.role, tm.joined_at FROM team_members tm JOIN students s ON s.id=tm.user_id WHERE tm.team_id=? AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='') ORDER BY s.name", array($cid))));
+}
+
+// Team id cho assignment: nhan team_id hoac class_id (legacy), kie' m tra GV phai coach/admin
+function resolve_assign_team($me, $b) {
+    $tid = (int)($b['team_id'] ?? 0);
+    if (!$tid) $tid = (int)($b['class_id'] ?? 0);
+    if (!$tid) {
+        $mine = teacher_coached_team_ids((int)$me['id']);
+        if (is_admin($me)) {
+            $any = q_one('SELECT id FROM teams ORDER BY id');
+            $tid = $any ? (int)$any['id'] : 0;
+        } else {
+            $tid = $mine ? $mine[0] : 0;
+        }
+    }
+    if (!$tid || !q_one('SELECT 1 FROM teams WHERE id=?', array($tid))) jerr('Thiếu đội tuyển.');
+    if (!is_admin($me)) {
+        $mine = teacher_coached_team_ids((int)$me['id']);
+        if (!in_array($tid, $mine, true)) jerr('Bạn không phụ trách đội này.', 403);
+    }
+    return $tid;
 }
 
 // ---------------- ASSIGNMENTS ----------------
 if ($path === '/assignments' && $method === 'GET') {
     $me = require_me();
     if (is_role_teacher($me)) {
-        $classId = isset($_GET['class_id']) ? (int)$_GET['class_id'] : 0;
-        if ($classId) j(q_all('SELECT a.*, c.name class_name, t.name topic_name FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.class_id=? ORDER BY a.created_at DESC', array($classId)));
-        j(q_all('SELECT a.*, c.name class_name, t.name topic_name FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id ORDER BY a.created_at DESC'));
+        $tId = isset($_GET['team_id']) ? (int)$_GET['team_id'] : (isset($_GET['class_id']) ? (int)$_GET['class_id'] : 0);
+        if ($tId) j(q_all('SELECT a.*, tt.name class_name, t.name topic_name FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.team_id=? ORDER BY a.created_at DESC', array($tId)));
+        j(q_all('SELECT a.*, tt.name class_name, t.name topic_name FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id ORDER BY a.created_at DESC'));
     }
     $ids = my_class_ids($me['id']);
     if (!$ids) { j(array()); }
     $in = implode(',', array_fill(0, count($ids), '?'));
-    $rows = q_all("SELECT a.*, c.name class_name, t.name topic_name FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.class_id IN ($in) ORDER BY a.created_at DESC", $ids);
+    $rows = q_all("SELECT a.*, tt.name class_name, t.name topic_name FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.team_id IN ($in) ORDER BY a.created_at DESC", $ids);
     $out = array();
     foreach ($rows as $r) {
         $sub = q_one('SELECT id, score, feedback, submitted_at FROM submissions WHERE assignment_id=? AND student_id=?', array($r['id'], $me['id']));
@@ -1252,16 +1299,15 @@ if ($path === '/assignments' && $method === 'POST') {
     if (!is_role_teacher($me)) jerr('Khu vực giáo viên.', 403);
     $b = body();
     $title = mb_substr(trim($b['title'] ?? ''), 0, 255);
-    $classId = (int)($b['class_id'] ?? 0);
     if ($title === '') jerr('Thiếu tên bài tập.');
-    if (!$classId || !q_one('SELECT 1 FROM classes WHERE id=?', array($classId))) jerr('Thiếu lớp.');
+    $teamId = resolve_assign_team($me, $b);
     $topic = trim($b['topic_id'] ?? '');
     if ($topic === '') $topic = null;
     $deadline = trim($b['deadline'] ?? '');
     if ($deadline !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deadline)) $deadline = null;
     if ($deadline === '') $deadline = null;
-    db()->prepare('INSERT INTO assignments (class_id, topic_id, title, description, deadline, created_by) VALUES (?,?,?,?,?,?)')
-        ->execute(array($classId, $topic, $title, mb_substr(trim($b['description'] ?? ''), 0, 2000), $deadline, $me['id']));
+    db()->prepare('INSERT INTO assignments (team_id, topic_id, title, description, deadline, created_by) VALUES (?,?,?,?,?,?)')
+        ->execute(array($teamId, $topic, $title, mb_substr(trim($b['description'] ?? ''), 0, 2000), $deadline, $me['id']));
     $aid = (int)db()->lastInsertId();
     $qs = is_array($b['questions'] ?? null) ? $b['questions'] : array();
     $n = 0;
@@ -1278,7 +1324,7 @@ if ($path === '/assignments' && $method === 'POST') {
     if ($n === 0) jerr('Cần ít nhất 1 câu hỏi.');
     try {
         $dline = $deadline ? ' · hạn ' . $deadline : '';
-        notify_class($classId, 'Giao bài mới: ' . $title,
+        notify_class($teamId, 'Giao bài mới: ' . $title,
             mb_substr(($b['description'] ?? '') !== '' ? $b['description'] : ('Bài tập mới' . $dline), 0, 900),
             '/assignments/' . $aid);
     } catch (Exception $e) {}
@@ -1289,10 +1335,10 @@ if (preg_match('#^/assignments/(\d+)$#', $path, $m)) {
     if ($method !== 'GET') jerr('Không hỗ trợ.', 405);
     $me = require_me();
     $aid = (int)$m[1];
-    $a = q_one('SELECT a.*, c.name class_name, t.name topic_name FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.id=?', array($aid));
+    $a = q_one('SELECT a.*, tt.name class_name, t.name topic_name FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.id=?', array($aid));
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
     $teacher = is_role_teacher($me);
-    if (!$teacher && !in_array((int)$a['class_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
+    if (!$teacher && !in_array((int)$a['team_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
     $a['deadline_passed'] = deadline_passed($a['deadline'] ?? null);
     $qs = q_all('SELECT id, idx, content, points' . ($teacher ? ', answer' : '') . ' FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
     $a['questions'] = $qs;
@@ -1311,7 +1357,7 @@ if (preg_match('#^/assignments/(\d+)/submit$#', $path, $m)) {
     $aid = (int)$m[1];
     $a = q_one('SELECT * FROM assignments WHERE id=?', array($aid));
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
-    if (!in_array((int)$a['class_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
+    if (!in_array((int)$a['team_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
     if (deadline_passed($a['deadline'] ?? null)) jerr('Đã qua hạn nộp bài.', 400);
     $existing = q_one('SELECT id, score FROM submissions WHERE assignment_id=? AND student_id=?', array($aid, $me['id']));
     if ($existing && $existing['score'] !== null) jerr('Bài đã chấm, không thể nộp lại.', 400);
@@ -1343,7 +1389,7 @@ if (preg_match('#^/assignments/(\d+)/draft$#', $path, $m)) {
     $aid = (int)$m[1];
     $a = q_one('SELECT * FROM assignments WHERE id=?', array($aid));
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
-    if (!in_array((int)$a['class_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
+    if (!in_array((int)$a['team_id'], my_class_ids($me['id']), true)) jerr('Bạn không ở lớp này.', 403);
     $existing = q_one('SELECT id, score FROM submissions WHERE assignment_id=? AND student_id=?', array($aid, $me['id']));
     if ($existing && $existing['score'] !== null) jerr('Bài đã chấm, không sửa được.', 400);
     $b = body();
@@ -1375,9 +1421,9 @@ if (preg_match('#^/assignments/(\d+)/submissions$#', $path, $m)) {
     $a = q_one('SELECT * FROM assignments WHERE id=?', array($aid));
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
     $rows = q_all('SELECT s.id sid, s.name, s.class_name, sub.id sub_id, sub.answer, sub.score, sub.feedback, sub.submitted_at, sub.graded_at, sub.question_scores, sub.files
-        FROM class_members cm JOIN students s ON s.id=cm.user_id
+        FROM team_members tm JOIN students s ON s.id=tm.user_id
         LEFT JOIN submissions sub ON sub.assignment_id=? AND sub.student_id=s.id
-        WHERE cm.class_id=? ORDER BY s.name', array($aid, $a['class_id']));
+        WHERE tm.team_id=? AND tm.member_role=\'student\' AND (tm.left_at IS NULL OR tm.left_at=\'\') ORDER BY s.name', array($aid, $a['team_id']));
     $qs = q_all('SELECT idx, content, answer, points FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
     $out = array();
     foreach ($rows as $r) {
@@ -1448,7 +1494,7 @@ if ($path === '/me/results' && $method === 'GET') {
     $assigned = 0;
     if ($ids) {
         $in = implode(',', array_fill(0, count($ids), '?'));
-        $assigned = (int)q_one("SELECT COUNT(*) c FROM assignments WHERE class_id IN ($in)", $ids)['c'];
+        $assigned = (int)q_one("SELECT COUNT(*) c FROM assignments WHERE team_id IN ($in)", $ids)['c'];
     }
     j(array('results' => $rows, 'assigned_total' => $assigned));
 }
@@ -1460,7 +1506,7 @@ if ($path === '/me/progress' && $method === 'GET') {
     $assigned = 0;
     if ($ids) {
         $in = implode(',', array_fill(0, count($ids), '?'));
-        $assigned = (int)q_one("SELECT COUNT(*) c FROM assignments WHERE class_id IN ($in)", $ids)['c'];
+        $assigned = (int)q_one("SELECT COUNT(*) c FROM assignments WHERE team_id IN ($in)", $ids)['c'];
     }
     $subs = q_all('SELECT sub.score, sub.submitted_at, a.topic_id, t.name topic_name FROM submissions sub JOIN assignments a ON a.id=sub.assignment_id LEFT JOIN topics t ON t.id=a.topic_id WHERE sub.student_id=?', array($me['id']));
     $completed = 0; $graded = 0; $sum = 0.0;
@@ -1653,23 +1699,23 @@ if ($path === '/stats/class-overview' && $method === 'GET') {
     $active = (int)q_one('SELECT COUNT(*) c FROM assignments WHERE deadline IS NULL OR deadline >= CURDATE()')['c'];
     $ungraded = (int)q_one('SELECT COUNT(*) c FROM submissions WHERE score IS NULL AND submitted_at IS NOT NULL')['c'];
 
-    // Bai gan day + so da nop/chua nop
-    $recent = q_all('SELECT a.id, a.title, a.deadline, a.topic_id, c.name class_name, t.name topic_name,
-        (SELECT COUNT(*) FROM class_members cm WHERE cm.class_id=a.class_id) total,
+    // Bai gan day + so da nop/chua nop (join teams)
+    $recent = q_all('SELECT a.id, a.title, a.deadline, a.topic_id, tt.name class_name, t.name topic_name,
+        (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id=a.team_id AND tm.member_role=\'student\' AND (tm.left_at IS NULL OR tm.left_at=\'\')) total,
         (SELECT COUNT(*) FROM submissions s WHERE s.assignment_id=a.id AND s.submitted_at IS NOT NULL) submitted
-        FROM assignments a JOIN classes c ON c.id=a.class_id LEFT JOIN topics t ON t.id=a.topic_id
+        FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id
         ORDER BY a.created_at DESC LIMIT 5');
 
     // Tien do lop theo chuyen de: da nop / (so bai cua CD * so hs lop do)
-    $tpRows = q_all('SELECT t.id tid, t.name tname, a.class_id,
+    $tpRows = q_all('SELECT t.id tid, t.name tname, a.team_id,
         COUNT(DISTINCT a.id) an,
         (SELECT COUNT(*) FROM submissions s WHERE s.assignment_id=a.id AND s.submitted_at IS NOT NULL) done
         FROM topics t
         JOIN assignments a ON a.topic_id=t.id
-        GROUP BY t.id, t.name, a.class_id ORDER BY t.name');
+        GROUP BY t.id, t.name, a.team_id ORDER BY t.name');
     $topicProgress = array();
     foreach ($tpRows as $t) {
-        $members = (int)q_one('SELECT COUNT(*) c FROM class_members WHERE class_id=?', array($t['class_id']))['c'];
+        $members = (int)q_one("SELECT COUNT(*) c FROM team_members WHERE team_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')", array($t['team_id']))['c'];
         $expected = max(1, (int)$t['an'] * $members);
         // done = tong da nop tren cac bai cua CD nay (tinh lai chinh xac)
         $done = (int)q_one('SELECT COUNT(*) c FROM submissions s JOIN assignments a2 ON a2.id=s.assignment_id WHERE a2.topic_id=? AND s.submitted_at IS NOT NULL', array($t['tid']))['c'];
@@ -1746,8 +1792,8 @@ if ($path === '/notifications/read' && $method === 'POST') {
     j(array('ok' => true));
 }
 
-function notify_class($class_id, $title, $bodyTxt, $link) {
-    $members = q_all('SELECT user_id FROM class_members WHERE class_id=?', array($class_id));
+function notify_class($team_id, $title, $bodyTxt, $link) {
+    $members = q_all("SELECT user_id FROM team_members WHERE team_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')", array($team_id));
     $st = db()->prepare('INSERT INTO notifications (user_id, title, body, link) VALUES (?,?,?,?)');
     foreach ($members as $m) {
         $st->execute(array($m['user_id'], mb_substr($title, 0, 255), mb_substr($bodyTxt, 0, 1000), mb_substr($link, 0, 500)));
