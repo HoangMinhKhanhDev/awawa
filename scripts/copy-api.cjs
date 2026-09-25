@@ -38,8 +38,12 @@ if (fs.existsSync(rootHtaccess)) {
 }
 const databaseSource = path.join(__dirname, '..', 'database');
 if (fs.existsSync(databaseSource)) {
-  fs.cpSync(databaseSource, path.join(dest, '..', 'database'), { recursive: true });
-  console.log('[copy-api] copied database/');
+  const skip = /[\\/](seeds|backups)([\\/]|$)/;
+  fs.cpSync(databaseSource, path.join(dest, '..', 'database'), {
+    recursive: true,
+    filter: (source) => !skip.test(source),
+  });
+  console.log('[copy-api] copied database/ (bỏ seeds/backups)');
 }
 
 function phpString(value) {
