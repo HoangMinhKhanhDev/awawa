@@ -660,9 +660,11 @@ if ($method === 'GET' && $path === '/stats/leaderboard') {
         WHERE COALESCE(st.role,'student') NOT IN ('teacher','admin','super_admin')
           AND COALESCE(st.active,1)=1";
     if ($team !== '') { $sql .= ' AND st.team=?'; $p[] = $team; }
-    $sql .= ' GROUP BY st.id ORDER BY best IS NULL, best DESC, avg DESC, n DESC LIMIT ' . $limit;
+    $sql .= ' GROUP BY st.id ORDER BY best DESC, avg DESC, n DESC LIMIT ' . $limit;
     $out = array(); $rank = 0;
-    foreach (q_all($sql, $p) as $r) {
+    try { $leaderboardRows = q_all($sql, $p); }
+    catch (Throwable $e) { jerr('Leaderboard loi: ' . $e->getMessage(), 500); }
+    foreach ($leaderboardRows as $r) {
         $rank++;
         $out[] = array(
             'rank' => $rank, 'student_id' => (int)$r['id'], 'name' => $r['name'],

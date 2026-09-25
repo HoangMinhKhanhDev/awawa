@@ -23,7 +23,7 @@ export default function Info() {
         api.leaderboard({ limit: 50 }).catch(() => []),
         api.notifications().catch(() => ({ items: [], unread: 0 })),
       ])
-      setBoard(Array.isArray(boardData) ? boardData : [])
+      setBoard(Array.isArray(boardData) ? boardData : (Array.isArray(boardData?.board) ? boardData.board : []))
       setItems(Array.isArray(notifData?.items) ? notifData.items : [])
       setUnread(Number(notifData?.unread || 0))
     } catch (error) {
