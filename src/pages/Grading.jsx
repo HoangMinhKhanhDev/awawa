@@ -17,7 +17,7 @@ function GradePick() {
   const [list, setList] = useState([])
   const nav = useNavigate()
   useEffect(() => {
-    if (!teacher) { nav('/results'); return }
+    if (!teacher) { nav('/info'); return }
     api.assignments().then(setList).catch(() => setList([]))
   }, [])
   if (!teacher) return null
@@ -65,7 +65,7 @@ function GradeOne() {
     try { setData(await api.assignmentSubmissions(id)); setErr('') } catch (e) { setErr(errMsg(e)) }
   }
   useEffect(() => {
-    if (!teacher) { nav('/results'); return }
+    if (!teacher) { nav('/info'); return }
     load()
   }, [id])
 

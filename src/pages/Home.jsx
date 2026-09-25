@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import {
-  IconBook, IconTask, IconUser, IconMessage, IconPen, IconUsers, IconTrophy,
+  IconBook, IconTask, IconUser, IconMessage, IconPen, IconUsers,
   IconCalendar, IconWand, IconChart, IconCheckCircle,
 } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
-import { useUI } from '../components/ui.jsx'
 import { isStaffRole } from '../lib/roles.js'
+import { filterSubjects } from '../lib/subjects.js'
 
 export default function Home() {
   const s = getSession()
@@ -16,37 +16,84 @@ export default function Home() {
   return isTeacher ? <TeacherHome /> : <StudentHome me={me} />
 }
 
+function Donut({ value, label }) {
+  const pct = Math.max(0, Math.min(100, Math.round(value || 0)))
+  const r = 42
+  const c = 2 * Math.PI * r
+  return (
+    <div className="donut-wrap">
+      <svg viewBox="0 0 100 100" className="donut" role="img" aria-label={`${label} ${pct}%`}>
+        <circle cx="50" cy="50" r={r} fill="none" stroke="var(--line)" strokeWidth="10" />
+        <circle
+          cx="50" cy="50" r={r} fill="none" stroke="var(--accent)" strokeWidth="10"
+          strokeLinecap="round" strokeDasharray={`${(pct / 100) * c} ${c}`}
+          transform="rotate(-90 50 50)"
+        />
+      </svg>
+      <div className="donut-label"><b>{pct}%</b><span>{label}</span></div>
+    </div>
+  )
+}
+
+function Bars({ items, max = 10, suffix = '' }) {
+  if (!items.length) return <div className="empty">Chưa có dữ liệu.</div>
+  return (
+    <div className="bars">
+      {items.map((item) => {
+        const width = Math.max(2, Math.min(100, (Number(item.value) / max) * 100))
+        return (
+          <div className="bar-row" key={item.label}>
+            <span className="bar-label">{item.label}</span>
+            <div className="bar-track"><div className="bar-fill" style={{ width: `${width}%` }} /></div>
+            <b className="bar-value">{item.value}{suffix}</b>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function Sparkline({ points }) {
+  if (points.length < 2) return <div className="empty">Chưa đủ dữ liệu để vẽ.</div>
+  const values = points.map((p) => Number(p.value) || 0)
+  const max = Math.max(...values, 10)
+  const stepX = 100 / (values.length - 1)
+  const coords = values.map((v, i) => `${(i * stepX).toFixed(2)},${(100 - (v / max) * 100).toFixed(2)}`).join(' ')
+  return (
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="sparkline" role="img" aria-label="Điểm gần đây">
+      <polyline points={coords} fill="none" stroke="var(--accent)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+    </svg>
+  )
+}
+
 function StudentHome({ me }) {
-  const { toast, errMsg } = useUI()
   const [classes, setClasses] = useState([])
   const [progress, setProgress] = useState(null)
   const [assignments, setAssignments] = useState([])
-  const [joinCode, setJoinCode] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [subjects, setSubjects] = useState([])
 
   const load = () => {
     api.classes().then(setClasses).catch(() => setClasses([]))
     api.myProgress().then(setProgress).catch(() => setProgress(null))
     api.assignments().then(setAssignments).catch(() => setAssignments([]))
+    api.mySubjects()
+      .then((rows) => {
+        const kept = filterSubjects(rows)
+        if (kept.length) setSubjects(kept)
+        else throw new Error('empty')
+      })
+      .catch(() => api.subjects()
+        .then((all) => setSubjects(filterSubjects(all)))
+        .catch(() => setSubjects([])))
   }
   useEffect(load, [])
 
-  const join = async () => {
-    if (!joinCode.trim()) return toast('Nhập mã lớp trước.', 'warn')
-    setBusy(true)
-    try {
-      await api.joinClass(joinCode.trim())
-      setJoinCode('')
-      toast('Đã vào lớp.')
-      load()
-    } catch (e) { toast(errMsg(e), 'err') }
-    setBusy(false)
-  }
-
-  const inClass = classes.length > 0
   const todo = assignments.filter((a) => a.status === 'todo' || a.status === 'draft')
+  const submitted = assignments.filter((a) => a.status === 'submitted' || a.status === 'graded')
+  const graded = assignments.filter((a) => a.status === 'graded')
   const pct = Math.round((progress?.overall_ratio ?? progress?.ratio ?? 0) * 100)
-  const ct = progress?.current_topic
+  const topicBars = (progress?.by_topic || []).slice(0, 6).map((t) => ({ label: t.topic, value: t.avg ?? 0 }))
+  const timeline = (progress?.timeline || []).slice().reverse().map((t) => ({ label: t.day, value: t.avg_score ?? 0 }))
 
   return (
     <div className="grid">
@@ -68,34 +115,55 @@ function StudentHome({ me }) {
         </div>
       </div>
 
-      {!inClass && (
-        <div className="card">
-          <h3>Vào lớp</h3>
-          <div className="row">
-            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Nhập mã lớp (VD: HSG2026)" value={joinCode} onChange={(e) => setJoinCode(e.target.value)} aria-label="Mã lớp" />
-            <button className="btn primary" onClick={join} disabled={busy}>{busy ? 'Đang vào…' : 'Vào lớp'}</button>
+      <div className="card">
+        <div className="row spread" style={{ marginBottom: 12 }}>
+          <h3 style={{ margin: 0 }}>Môn học</h3>
+          <Link className="small" to="/topics">Tất cả →</Link>
+        </div>
+        {subjects.length === 0 ? (
+          <div className="empty">Chưa có môn học.</div>
+        ) : (
+          <div className="subject-grid">
+            <Link
+              className="subject-tile subject-tile-green"
+              to={isStaffRole(me?.role || 'student') ? `/manage/studio?subject=${subjects[0].id}` : `/topics/${subjects[0].id}`}
+            >
+              <IconBook className="icn lg" />
+              <span>Công nghệ</span>
+            </Link>
           </div>
-          <div className="small muted" style={{ marginTop: 8 }}>Nhận mã lớp từ giáo viên để vào lớp và nhận bài tập.</div>
-        </div>
-      )}
+        )}
+      </div>
 
-      <div className="grid c3">
-        <div className="card">
-          <div className="kicker"><IconBook className="icn sm" />Đang học</div>
-          <div className="kpi" style={{ fontSize: 18 }}>{ct ? ct.name : (progress?.by_topic?.[0]?.topic || '—')}</div>
-          {ct && <div className="small muted">Bài học {ct.done}/{ct.total}</div>}
-          <Link className="small" to={ct?.subject_id ? `/topics/${ct.subject_id}` : '/topics'}>Tiếp tục →</Link>
-        </div>
-        <div className="card">
-          <div className="kicker"><IconTask className="icn sm" />Bài tập</div>
-          <div className="kpi">{todo.length} bài chưa làm</div>
-          <Link className="small" to="/assignments">Xem bài →</Link>
-        </div>
-        <div className="card">
-          <div className="kicker"><IconTrophy className="icn sm" />Kết quả gần nhất</div>
-          <div className="kpi">{progress?.latest_score != null ? `${progress.latest_score} / 10` : '—'}</div>
-          {progress?.latest_title && <div className="small muted">{progress.latest_title}</div>}
-          <Link className="small" to="/results">Xem tất cả →</Link>
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Thống kê của tôi</h3>
+        <div className="chart-grid">
+          <div className="chart-box">
+            <div className="kicker">Tiến độ tổng</div>
+            <Donut value={pct} label="hoàn thành" />
+          </div>
+          <div className="chart-box">
+            <div className="kicker">Điểm trung bình theo chuyên đề</div>
+            <Bars items={topicBars} max={10} suffix="" />
+          </div>
+          <div className="chart-box">
+            <div className="kicker">Trạng thái bài tập</div>
+            <Bars
+              items={[
+                { label: 'Chưa làm', value: todo.length },
+                { label: 'Đã nộp', value: submitted.length },
+                { label: 'Đã chấm', value: graded.length },
+              ]}
+              max={Math.max(1, assignments.length)}
+            />
+          </div>
+          <div className="chart-box">
+            <div className="kicker">Điểm gần đây</div>
+            <Sparkline points={timeline} />
+            {progress?.latest_score != null && (
+              <div className="small muted" style={{ marginTop: 6 }}>Mới nhất: <b>{progress.latest_score}/10</b>{progress.latest_title ? ` · ${progress.latest_title}` : ''}</div>
+            )}
+          </div>
         </div>
       </div>
 

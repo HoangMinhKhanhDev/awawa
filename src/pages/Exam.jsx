@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { IconTimer, IconTrophy, IconPlay } from '../components/icons.jsx'
-import { ClozeText } from '../components/ClozeText.jsx'
+import ExamPaper from '../components/ExamPaper.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
+import { filterSubjects } from '../lib/subjects.js'
 
 function fmt(s) { const m = Math.floor(s / 60), r = s % 60; return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}` }
-const optsOf = (q) => { try { const p = JSON.parse(q.options || '[]'); return Array.isArray(p) ? p : [] } catch { return [] } }
 
 export default function Exam() {
   const { toast, errMsg } = useUI()
@@ -31,9 +31,11 @@ export default function Exam() {
 
   // Share link từ Studio: #/exam?shared=<id> (HashRouter → useLocation().search)
   const sharedId = new URLSearchParams(loc.search).get('shared') || ''
+  const previewMode = new URLSearchParams(loc.search).get('preview') === '1'
 
   useEffect(() => {
-    api.subjects().then((s) => {
+    api.subjects().then((all) => {
+      const s = filterSubjects(all)
       setSubjects(s)
       const cn = s.find((x) => x.id === 'cn-nong') || s.find((x) => x.id.startsWith('cn-')) || s[0]
       if (cn) setCfg((c) => ({ ...c, subject_id: c.subject_id || cn.id }))
@@ -105,6 +107,17 @@ export default function Exam() {
         const ua = Array.isArray(a) ? a : []
         return { question_id: q.id, user_answer: ua, is_correct: null }
       }
+      if (q.qtype === 'dung_sai') {
+        const norm = (v) => {
+          const u = String(v || '').trim().toUpperCase()
+          if (u === 'ĐÚNG' || u === 'DUNG' || u === 'TRUE' || u === 'T') return 'DUNG'
+          if (u === 'SAI' || u === 'FALSE' || u === 'F') return 'SAI'
+          return u
+        }
+        const ua = norm(a)
+        const ca = norm(q.correct_answer)
+        return { question_id: q.id, user_answer: String(a || '').trim(), is_correct: ua !== '' && ua === ca }
+      }
       return { question_id: q.id, user_answer: String(a || '').trim(), is_correct: null }
     })
     const payload = { answers: details, student_name: studentName, student_id: getSession().student?.id || null, focus_exits: f.exits, focus_log: f.log }
@@ -161,11 +174,17 @@ export default function Exam() {
     const name = studentName.trim() || getSession().student?.name || ''
     localStorage.setItem('studentName', name)
     try {
-      const full = await api.getExam(ex.id)
+      const full = await api.getExam(ex.id, previewMode)
       if (!full.questions?.length) { toast('Đề trống hoặc lỗi tải.', 'err'); setBusy(false); return }
       setExam(full)
       setQs(full.questions)
-      setAnswers({}); setResult(null)
+      setAnswers({})
+      setResult(null)
+      if (previewMode) {
+        window.scrollTo(0, 0)
+        setBusy(false)
+        return
+      }
       beginTimer(full.duration_min || ex.duration_min || 45)
       window.scrollTo(0, 0)
     } catch (e) { toast(errMsg(e), 'err') }
@@ -255,15 +274,17 @@ export default function Exam() {
           </>
         ) : (
           <div className="row spread">
-            <div><b>{exam.title || cfg.title}</b><div className="small muted">{qs.length} câu · {result ? 'Đã nộp' : 'Đang làm'}{studentName && ` · ${studentName}`}</div></div>
-            {!result && <div className="timer" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><IconTimer className="icn sm" />{fmt(left)}</div>}
-            {!result && <span className={`badge ${exits > 0 ? 'red' : 'green'}`}>Rời app: {exits} lần</span>}
-            {!result && <button className="btn primary" onClick={() => submit(false)} disabled={submitting}>{submitting ? 'Đang nộp…' : 'Nộp bài'}</button>}
-            {result && <button className="btn" onClick={() => { setExam(null); setResult(null); setQs([]); submittedRef.current = false }}>Làm đề khác</button>}
+            <div><b>{exam.title || cfg.title}</b><div className="small muted">{qs.length} câu · {previewMode ? 'Xem trước' : result ? 'Đã nộp' : 'Đang làm'}{studentName && !previewMode && ` · ${studentName}`}</div></div>
+            {previewMode && <span className="badge amber">Chế độ xem trước — học sinh sẽ thấy như thế này</span>}
+            {!result && !previewMode && <div className="timer" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><IconTimer className="icn sm" />{fmt(left)}</div>}
+            {!result && !previewMode && <span className={`badge ${exits > 0 ? 'red' : 'green'}`}>Rời app: {exits} lần</span>}
+            {!result && !previewMode && <button className="btn primary" onClick={() => submit(false)} disabled={submitting}>{submitting ? 'Đang nộp…' : 'Nộp bài'}</button>}
+            {result && !previewMode && <button className="btn" onClick={() => { setExam(null); setResult(null); setQs([]); submittedRef.current = false }}>Làm đề khác</button>}
+            {previewMode && <button className="btn" onClick={() => { setExam(null); setResult(null); setQs([]); submittedRef.current = false }}>Thoát xem trước</button>}
           </div>
         )}
-        {result && result.record && <div className="record" style={{ marginTop: 10 }}><IconTrophy className="icn" />Kỷ lục mới! Vượt thành tích thi thử tốt nhất của bạn.</div>}
-        {result && (
+        {result && !previewMode && result.record && <div className="record" style={{ marginTop: 10 }}><IconTrophy className="icn" />Kỷ lục mới! Vượt thành tích thi thử tốt nhất của bạn.</div>}
+        {result && !previewMode && (
           <div className="msg info" style={{ marginTop: 12, fontSize: 14 }} role="status">
             <b>Kết quả trắc nghiệm: {result.correct}/{result.total ?? result.totalMC ?? qs.length} đúng ({Math.round((result.accuracy || 0) * 100)}%)</b>
             {result.auto && <span className="small"> · Tự nộp do hết giờ</span>}
@@ -276,55 +297,7 @@ export default function Exam() {
         )}
       </div>
 
-      {exam && qs.map((q, i) => (
-        <div className="card" key={q.id}>
-          <b>Câu {i + 1}{q.qtype === 'diem_khuyet' ? ' — Điền từ' : ''}</b>
-          {q.qtype === 'diem_khuyet' ? (
-            <div style={{ margin: '8px 0' }}>
-              <ClozeText
-                content={q.content}
-                values={Array.isArray(answers[q.id]) ? answers[q.id] : []}
-                disabled={!!result}
-                onChange={(bi, val) => {
-                  const cur = Array.isArray(answers[q.id]) ? [...answers[q.id]] : []
-                  cur[bi] = val
-                  setAnswers({ ...answers, [q.id]: cur })
-                }}
-              />
-              {result && (
-                <div className="answer-box" style={{ marginTop: 8 }}>
-                  <b>Đáp án:</b> <span>{(q.correct_answer || '').split('|').join(' / ')}</span>
-                </div>
-              )}
-            </div>
-          ) : (
-            <>
-              <div style={{ whiteSpace: 'pre-wrap', margin: '8px 0' }}>{q.content}</div>
-              {q.image_url && <div style={{ margin: '0 0 10px' }}><img src={q.image_url} alt="minh họa" loading="lazy" /></div>}
-              {q.qtype === 'trac_nghiem' ? optsOf(q).map((o, k) => {
-                const L = 'ABCD'[k]
-                const picked = (answers[q.id] || '').toUpperCase() === L
-                let cls = 'opt' + (picked ? ' picked' : '')
-                if (result) {
-                  if (L === (q.correct_answer || '').toUpperCase()) cls = 'opt right'
-                  else if (picked) cls = 'opt wrong'
-                }
-                return <button key={k} type="button" className={cls} disabled={!!result} aria-pressed={picked} onClick={() => !result && setAnswers({ ...answers, [q.id]: L })}><b aria-hidden="true">{L}.</b> {o}</button>
-              }) : (
-                <>
-                  <textarea className="textarea" value={answers[q.id] || ''} onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })} placeholder="Bài làm tự luận…" />
-                  {result && (
-                    <div className="answer-box" style={{ marginTop: 8 }}>
-                      <b>Đáp án tham khảo:</b> <span>{q.correct_answer}</span>
-                      {q.explanation && <><br /><b>Lời giải:</b> <span>{q.explanation}</span></>}
-                    </div>
-                  )}
-                </>
-              )}
-            </>
-          )}
-        </div>
-      ))}
+      {exam && <ExamPaper questions={qs} answers={answers} setAnswers={setAnswers} result={result} interactive={previewMode} />}
     </div>
   )
 }

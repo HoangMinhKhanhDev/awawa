@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 import { IconPlus, IconSearch, IconShield, IconEye, IconLayers } from '../components/icons.jsx'
+import { filterSubjects } from '../lib/subjects.js'
 
 export default function Bank() {
   const { toast, confirmBox, errMsg } = useUI()
@@ -17,7 +18,7 @@ export default function Bank() {
   const [newTopic, setNewTopic] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const loadSubjects = async () => setSubjects(await api.subjects().catch(() => []))
+  const loadSubjects = async () => setSubjects(filterSubjects(await api.subjects().catch(() => [])))
   const loadTopics = async (sid) => setTopics(await api.topics(sid || undefined).catch(() => []))
   const load = async () => {
     setLoading(true)

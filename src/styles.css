@@ -840,3 +840,69 @@ hr.sep { border: 0; border-top: 1px solid var(--line-soft); margin: 14px 0; }
   .context-switcher.compact .select { max-width: 112px; }
   .grid.c2.keep, .grid.c3.keep { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 }
+
+/* ===== Trang chủ: ô môn học + chart ===== */
+.subject-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+.subject-tile {
+  aspect-ratio: 1 / 1; border-radius: 14px; border: 1px solid var(--line);
+  background: var(--accent-soft); color: var(--accent-ink);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 12px; text-align: center; text-decoration: none;
+  font-weight: 700; font-size: 14px; transition: box-shadow 0.15s, transform 0.15s;
+}
+.subject-tile:hover, .subject-tile:focus-visible { box-shadow: 0 0 0 3px var(--accent-line); transform: translateY(-1px); }
+.subject-tile .icn { width: 26px; height: 26px; }
+.subject-tile-green { background: var(--leaf); border-color: var(--leaf-deep); color: #fff; }
+.subject-tile-green:hover, .subject-tile-green:focus-visible { box-shadow: 0 0 0 3px var(--leaf-line, var(--accent-line)); }
+
+.subject-single {
+  width: min(100%, 340px); aspect-ratio: 1 / 1; border-radius: 16px;
+  border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--accent-ink);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.subject-single-head {
+  display: flex; align-items: center; gap: 8px; padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--accent-line);
+}
+.subject-single-head b { font-size: 16px; }
+.subject-single-head .badge { margin-left: auto; }
+.subject-single-body { flex: 1; overflow-y: auto; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 6px; }
+.topic-mini {
+  font-size: 13px; font-weight: 600; text-decoration: none; color: inherit;
+  padding: 7px 9px; border-radius: 8px; background: rgba(255, 255, 255, 0.55);
+}
+.topic-mini:hover, .topic-mini:focus-visible { box-shadow: 0 0 0 2px var(--accent-line); }
+
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.chart-box { border: 1px solid var(--line-soft); border-radius: 12px; padding: 12px; background: var(--panel, transparent); }
+.chart-box .kicker { margin-bottom: 8px; }
+
+.donut-wrap { position: relative; display: grid; place-items: center; }
+.donut { width: 120px; height: 120px; }
+.donut-label { position: absolute; display: grid; justify-items: center; line-height: 1.1; }
+.donut-label b { font-size: 20px; }
+.donut-label span { font-size: 11px; color: var(--muted); }
+
+.bars { display: grid; gap: 8px; }
+.bar-row { display: grid; grid-template-columns: minmax(70px, 1fr) 2fr auto; align-items: center; gap: 8px; font-size: 12.5px; }
+.bar-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 999px; background: var(--accent); }
+.bar-value { font-variant-numeric: tabular-nums; }
+.sparkline { width: 100%; height: 90px; background: var(--line-soft); border-radius: 8px; }
+.topic-merge { margin-top: 14px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.topic-row { text-decoration: none; color: inherit; }
+
+/* ===== Studio: pipeline AI + DOCX ===== */
+.pipeline { display: grid; grid-template-columns: minmax(300px, 420px) 1fr; gap: 14px; align-items: start; }
+.pipeline-chat { position: sticky; top: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel, #fff); display: flex; flex-direction: column; overflow: hidden; }
+.chat-log { display: flex; flex-direction: column; gap: 8px; padding: 12px; max-height: 420px; overflow-y: auto; }
+.chat-msg { padding: 9px 11px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; max-width: 92%; }
+.chat-msg.assistant { background: var(--line-soft); align-self: flex-start; }
+.chat-msg.user { background: var(--accent-soft); color: var(--accent-ink); align-self: flex-end; }
+.chat-compose { padding: 12px; border-top: 1px solid var(--line-soft); background: var(--line-soft); }
+.pipeline-preview { min-width: 0; }
+@media (max-width: 900px) {
+  .pipeline { grid-template-columns: 1fr; }
+  .pipeline-chat { position: static; }
+}

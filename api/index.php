@@ -516,6 +516,8 @@ if ($method === 'GET' && $path === '/exams') {
 if ($method === 'GET' && preg_match('#^/exams/(\d+)$#', $path, $m)) {
     $ex = q_one('SELECT * FROM exams WHERE id=?', array((int)$m[1]));
     if (!$ex) jerr('Không tìm thấy đề', 404);
+    $previewViewer = isset($_GET['preview']) && $_GET['preview'] === '1' ? optional_session() : null;
+    $includeAnswer = $previewViewer && is_role_teacher($previewViewer);
     $ids = jlist($ex['question_ids']);
     $doShuffle = !isset($ex['shuffle_q']) || (int)$ex['shuffle_q'] === 1;
     $wantShuffle = !isset($_GET['shuffle']) || (int)$_GET['shuffle'] === 1;
@@ -525,7 +527,7 @@ if ($method === 'GET' && preg_match('#^/exams/(\d+)$#', $path, $m)) {
         $in = implode(',', array_fill(0, count($ids), '?'));
         $byId = array();
         foreach (q_all("SELECT * FROM questions WHERE id IN ($in)", $ids) as $r) $byId[$r['id']] = $r;
-        foreach ($ids as $qid) if (isset($byId[$qid])) $qs[] = row_to_q($byId[$qid]);
+        foreach ($ids as $qid) if (isset($byId[$qid])) $qs[] = row_to_q($byId[$qid], $includeAnswer);
     }
     j(array('id' => (int)$ex['id'], 'title' => $ex['title'], 'mode' => $ex['mode'],
         'duration_min' => (int)$ex['duration_min'], 'questions' => $qs,
@@ -581,12 +583,15 @@ if ($method === 'POST' && preg_match('#^/exams/(\d+)/submit$#', $path, $m)) {
             }
         } elseif ($qr['qtype'] === 'dung_sai') {
             $total++;
-            $ua = mb_strtoupper(preg_replace('/\s+/', '', trim($a['user_answer'] ?? '')));
-            $ca = mb_strtoupper(preg_replace('/\s+/', '', trim($qr['correct_answer'] ?? '')));
-            $ok = ($ua !== '' && ($ua === $ca || $ua === 'DUNG' || $ua === 'SAI' || $ua === 'ĐÚNG' || $ua === 'SAI'));
-            if ($ua === 'DUNG' || $ua === 'ĐUNG') $ua = 'DUNG';
-            if ($ua === $ca || ($ca === 'DUNG' && ($ua === 'DUNG' || $ua === 'ĐÚNG')) || ($ca === 'SAI' && $ua === 'SAI')) $ok = true;
-            else $ok = ($ua !== '' && $ua === $ca);
+            $norm = function ($v) {
+                $u = mb_strtoupper(preg_replace('/\s+/', '', trim((string) $v)));
+                if (in_array($u, array('ĐÚNG', 'DUNG', 'TRUE', 'T', '1'), true)) return 'DUNG';
+                if (in_array($u, array('SAI', 'FALSE', 'F', '0'), true)) return 'SAI';
+                return $u;
+            };
+            $ua = $norm($a['user_answer'] ?? '');
+            $ca = $norm($qr['correct_answer'] ?? '');
+            $ok = $ua !== '' && $ua === $ca;
             if ($ok) $correct++;
             $a['is_correct'] = $ok;
         } else {
@@ -617,7 +622,7 @@ if ($method === 'POST' && preg_match('#^/exams/(\d+)/submit$#', $path, $m)) {
                 json_encode($flog, JSON_UNESCAPED_UNICODE),
             ));
     }
-    j(array('attempt_id' => (int)db()->lastInsertId(), 'correct' => $correct, 'total' => $total, 'accuracy' => $acc, 'focus_exits' => max(0, (int)($b['focus_exits'] ?? 0))));
+    j(array('attempt_id' => (int)db()->lastInsertId(), 'correct' => $correct, 'total' => $total, 'accuracy' => $acc, 'focus_exits' => max(0, (int)($b['focus_exits'] ?? 0)), 'answers' => $details));
 }
 
 // ---------------- ATTEMPTS ----------------
@@ -641,22 +646,21 @@ if ($method === 'GET' && $path === '/stats/leaderboard') {
     $mode = $_GET['mode'] ?? 'exam';
     $team = trim($_GET['team'] ?? '');
     $limit = max(1, min((int)($_GET['limit'] ?? 50), 100));
+    $p = array();
+    $attemptJoin = ' LEFT JOIN attempts a ON a.student_id=st.id AND a.total > 0';
+    if ($mode === 'exam' || $mode === 'practice') { $attemptJoin .= ' AND a.mode=?'; $p[] = $mode; }
     $sql = "SELECT st.id, st.name, st.class_name, st.team, st.avatar_url,
         COUNT(a.id) n, MAX(a.accuracy) best, AVG(a.accuracy) avg, MAX(a.created_at) last_at,
         sc.aavg assign_avg, sc.an assign_n
-        FROM attempts a
-        JOIN students st ON st.id=a.student_id
+        FROM students st" . $attemptJoin . "
         LEFT JOIN (
             SELECT student_id, AVG(score) aavg, COUNT(*) an
             FROM submissions WHERE score IS NOT NULL GROUP BY student_id
         ) sc ON sc.student_id = st.id
-        WHERE a.student_id IS NOT NULL AND a.total > 0
-          AND COALESCE(st.role,'student') NOT IN ('teacher','admin','super_admin')
+        WHERE COALESCE(st.role,'student') NOT IN ('teacher','admin','super_admin')
           AND COALESCE(st.active,1)=1";
-    $p = array();
-    if ($mode === 'exam' || $mode === 'practice') { $sql .= ' AND a.mode=?'; $p[] = $mode; }
     if ($team !== '') { $sql .= ' AND st.team=?'; $p[] = $team; }
-    $sql .= ' GROUP BY st.id ORDER BY best DESC, avg DESC, n DESC LIMIT ' . $limit;
+    $sql .= ' GROUP BY st.id ORDER BY best IS NULL, best DESC, avg DESC, n DESC LIMIT ' . $limit;
     $out = array(); $rank = 0;
     foreach (q_all($sql, $p) as $r) {
         $rank++;
@@ -665,7 +669,8 @@ if ($method === 'GET' && $path === '/stats/leaderboard') {
             'class_name' => $r['class_name'], 'team' => $r['team'],
             'avatar_url' => $r['avatar_url'] ?? null,
             'attempts' => (int)$r['n'],
-            'best' => round((float)$r['best'], 4), 'avg' => round((float)$r['avg'], 4),
+            'best' => $r['best'] !== null ? round((float)$r['best'], 4) : null,
+            'avg' => $r['avg'] !== null ? round((float)$r['avg'], 4) : null,
             'assign_avg' => $r['assign_avg'] !== null ? round((float)$r['assign_avg'], 1) : null,
             'assign_n' => $r['assign_n'] !== null ? (int)$r['assign_n'] : 0,
             'last_at' => $r['last_at'],
@@ -1188,6 +1193,14 @@ if ($path === '/me/teams') {
     j(q_all("SELECT t.*,
         (SELECT COUNT(*) FROM team_memberships tm WHERE tm.team_id=t.id AND tm.role='student' AND tm.access='include' AND tm.status='active' AND tm.left_at IS NULL) student_count
         FROM teams t WHERE t.id IN ($in) ORDER BY t.name", $tids));
+}
+
+if ($path === '/me/subjects' && $method === 'GET') {
+    $me = require_me();
+    $ids = my_class_ids($me['id']);
+    if (!$ids) j(array());
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    j(q_all("SELECT DISTINCT s.id, s.name, s.code FROM subjects s JOIN teams t ON t.subject_id=s.id WHERE t.id IN ($in) ORDER BY s.name", $ids));
 }
 
 // ---------------- UPLOAD ẢNH + HỌC LIỆU / BÀI TẬP ----------------
@@ -2248,6 +2261,9 @@ function ai_build_messages($b) {
         if ($qtype === 'diem_khuyet') {
             $want = '{"questions":[{"content":"Cau co ___ va {{tu thay}}","correct_answer":"dap_an|tu_thay"}]}';
             $user = "Tao {$count} cau diem khuyet (cloze) cho '{$topic}'. Dung ___ hoac {{dap_an}} trong content. correct_answer cac dap an tach bang | theo thu tu blank.";
+        } elseif ($qtype === 'dung_sai') {
+            $want = '{"questions":[{"qtype":"dung_sai","content":"...","options":["Đúng","Sai"],"correct_answer":"DUNG|SAI","explanation":"..."}]}';
+            $user = "Tao {$count} cau dung/sai muc do {$difficulty} cho mon '{$subject}', chuyen de '{$topic}'. Moi cau la mot nhan dinh, options luon la [\"Đúng\",\"Sai\"], correct_answer la DUNG hoac SAI.";
         }
     } elseif ($type === 'cloze') {
         $want = '{"questions":[{"content":"...","correct_answer":"a|b"}]}';
@@ -2256,11 +2272,15 @@ function ai_build_messages($b) {
         $want = '{"title":"...","content":"noi dung bai hoc, ngan gon co cau muc, vi du, cong thuc"}';
         $user = "Viet bai hoc cho chuyen de '{$topic}' mon '{$subject}'. {$extra} Content 400-800 tu, co muc de doc, tieng Viet.";
     } elseif ($type === 'exam') {
-        $want = '{"title":"...","questions":[{"content":"...","options":["A","B","C","D"],"correct_answer":"A","explanation":"..."}]}';
-        $user = "Tao de thi {$count} cau trac nghiem mon '{$subject}' chuyen de '{$topic}', do kho {$difficulty}.{$extra}";
+        $want = '{"title":"...","questions":[{"qtype":"trac_nghiem|dung_sai","content":"...","options":["A","B","C","D"]|["Đúng","Sai"],"correct_answer":"A|DUNG|SAI","explanation":"..."}]}';
+        $user = "Tao de thi {$count} cau mon '{$subject}' chuyen de '{$topic}', do kho {$difficulty}, gom ca trac nghiem nhieu lua chon (qtype trac_nghiem, options A-D, correct_answer la chu cai) va dung/sai (qtype dung_sai, options [\"Đúng\",\"Sai\"], correct_answer la DUNG hoac SAI).{$extra}";
     } elseif ($type === 'flashcards') {
         $want = '{"cards":[{"front":"cau hoi/ngu canh","back":"dap an/ngan gon"}]}';
         $user = "Tao {$count} flashcard cho '{$topic}' mon '{$subject}'. Front ngan hoi, back dap an ro rang, tieng Viet.{$extra}";
+    } elseif ($type === 'parse') {
+        $rawText = mb_substr(trim((string) ($b['text'] ?? '')), 0, 14000);
+        $want = '{"questions":[{"qtype":"trac_nghiem|dung_sai|diem_khuyet|tu_luan","content":"...","options":["A","B","C","D"]|["Đúng","Sai"]|[],"correct_answer":"A|DUNG|SAI|text","explanation":"..."}]}';
+        $user = "Doc van ban de thi sau va TACH thanh tung cau hoi. Giu NGUYEN noi dung va loi giai neu co. Phan loai dung qtype: trac_nghiem (options A-D, correct_answer la chu cai A/B/C/D), dung_sai (options [\"Đúng\",\"Sai\"], correct_answer la DUNG hoac SAI), diem_khuyet (co ___ hoac {{...}}, correct_answer cac tu cach nhau bang | theo thu tu), tu_luan (correct_answer la dap an mau ngan gon). QUAN TRONG: moi cau BAT BUOC phai co correct_answer de cham diem. Neu de khong ghi dap an, hay TU GIAI va dien dap an dung nhat. Khong de trong correct_answer. Van ban:\n" . $rawText;
     }
     return array(
         'messages' => array(
@@ -2274,7 +2294,7 @@ function ai_build_messages($b) {
 
 function ai_normalize($type, $parsed) {
     if ($type === 'flashcards' && isset($parsed['cards'])) return $parsed;
-    if (($type === 'questions' || $type === 'cloze') && isset($parsed['questions'])) return array('questions' => $parsed['questions']);
+    if (($type === 'questions' || $type === 'cloze' || $type === 'parse') && isset($parsed['questions'])) return array('questions' => $parsed['questions']);
     return $parsed;
 }
 
@@ -2283,9 +2303,9 @@ if ($path === '/ai/generate' && $method === 'POST') {
     require_perm('studio.manage');
     $b = body();
     $type = trim($b['type'] ?? '');
-    if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze'), true)) jerr('type khong hop le.');
+    if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze', 'parse'), true)) jerr('type khong hop le.');
     $built = ai_build_messages($b);
-    $raw = agnes_chat($built['messages'], $built['model'], 4000, 0.4);
+    $raw = agnes_chat($built['messages'], $built['model'], 6000, 0.2);
     $parsed = agnes_parse_json($raw);
     if ($parsed === null) jerr('AI khong tra JSON hop le. Thu lai hoac doi model.', 502);
     j(array('type' => $type, 'model' => $built['model'] ?: AGNES_DEFAULT_MODEL, 'data' => ai_normalize($type, $parsed)));
@@ -2296,7 +2316,7 @@ if ($path === '/ai/generate-stream' && $method === 'POST') {
     require_perm('studio.manage');
     $b = body();
     $type = trim($b['type'] ?? '');
-    if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze'), true)) jerr('type khong hop le.');
+    if (!in_array($type, array('questions', 'lesson', 'exam', 'flashcards', 'cloze', 'parse'), true)) jerr('type khong hop le.');
     $built = ai_build_messages($b);
     @set_time_limit(180);
     @ini_set('max_execution_time', '180');

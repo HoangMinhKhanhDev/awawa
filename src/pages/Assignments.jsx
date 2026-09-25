@@ -4,6 +4,7 @@ import { IconTask, IconPlus, IconPen, IconCheckCircle, IconClock, IconAward, Ico
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 import { isStaffRole } from '../lib/roles.js'
+import { filterSubjects } from '../lib/subjects.js'
 
 function statusBadge(st) {
   if (st === 'graded') return <span className="badge green"><IconAward className="icn sm" />Đã chấm</span>
@@ -35,7 +36,7 @@ function AssignmentList() {
     api.assignments().then(setList).catch(() => setList([]))
     if (teacher) {
       api.classes().then(setClasses).catch(() => {})
-      api.subjects().then(setSubjects).catch(() => {})
+      api.subjects().then((rows) => setSubjects(filterSubjects(rows))).catch(() => {})
     }
   }
   useEffect(load, [])

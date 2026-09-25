@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   IconBook, IconTask, IconFileUp, IconLayers, IconChecks,
   IconTimer, IconUpload, IconWand, IconPlus, IconX,
@@ -9,10 +9,13 @@ import { api, getSession } from '../api.js'
 import { parseTextToDrafts } from '../lib/parseImport.js'
 import { useUI } from '../components/ui.jsx'
 import { isStaffRole } from '../lib/roles.js'
+import { filterSubjects } from '../lib/subjects.js'
+import ExamPaper from '../components/ExamPaper.jsx'
 
 const optsOf = (q) => { try { const p = JSON.parse(q.options || '[]'); return Array.isArray(p) ? p : [] } catch { return [] } }
 
 const TABS = [
+  { id: 'pipeline', label: 'AI + DOCX' },
   { id: 'ai', label: 'Sinh nội dung' },
   { id: 'import', label: 'Nhập tay' },
   { id: 'lesson', label: 'Bài học' },
@@ -25,6 +28,8 @@ export default function Studio() {
   const isStaff = isStaffRole(rawRole)
   const [step, setStep] = useState('ai')
   const nav = useNavigate()
+  const loc = useLocation()
+  const initialSubject = new URLSearchParams(loc.search).get('subject') || ''
 
   if (!isStaff) {
     return (
@@ -54,7 +59,8 @@ export default function Studio() {
         </nav>
       </header>
 
-      {step === 'ai' && <StepAI goTab={setStep} />}
+      {step === 'pipeline' && <StepPipeline initialSubject={initialSubject} />}
+      {step === 'ai' && <StepAI goTab={setStep} initialSubject={initialSubject} />}
       {step === 'import' && <StepImport onNext={() => setStep('lesson')} />}
       {step === 'lesson' && <StepLesson onNext={() => setStep('exam')} />}
       {step === 'exam' && <StepExam onNext={() => setStep('assign')} />}
@@ -82,7 +88,7 @@ const AI_MODELS = [
   { id: 'agnes-1.5-flash', label: 'Nhanh (1.5)' },
 ]
 
-function StepAI({ goTab }) {
+function StepAI({ goTab, initialSubject = '' }) {
   const { toast, errMsg } = useUI()
   const [subjects, setSubjects] = useState([])
   const [topics, setTopics] = useState([])
@@ -101,9 +107,15 @@ function StepAI({ goTab }) {
   const rawRef = useRef('')
 
   useEffect(() => {
-    api.subjects().then(setSubjects).catch(() => {})
+    api.subjects().then((rows) => {
+      const kept = filterSubjects(rows)
+      setSubjects(kept)
+      const chosen = kept.find((s) => s.id === initialSubject) || kept[0]
+      if (chosen) pickSubject(chosen.id)
+    }).catch(() => {})
     return () => abortRef.current?.abort()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSubject])
 
   const pickSubject = async (sid) => {
     const s = subjects.find((x) => x.id === sid)
@@ -218,7 +230,13 @@ function StepAI({ goTab }) {
 
   const saveExam = async () => {
     if (!form.subject_id) return toast('Chọn môn.', 'warn')
-    const qs = bankFrom('trac_nghiem').map((q) => ({ ...q, qtype: 'trac_nghiem' }))
+    const qs = bankFrom(null).map((q) => {
+      const type = q.qtype === 'dung_sai' ? 'dung_sai' : 'trac_nghiem'
+      const options = type === 'dung_sai'
+        ? (Array.isArray(q.options) && q.options.length ? q.options : ['Đúng', 'Sai'])
+        : (q.options || [])
+      return { ...q, qtype: type, options }
+    })
     if (!qs.length) return toast('Không có câu hỏi.', 'warn')
     setSaving(true)
     try {
@@ -466,7 +484,7 @@ function StepImport({ onNext }) {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    api.subjects().then((s) => { setSubjects(s); if (s[0]) setForm((f) => ({ ...f, subject_id: f.subject_id || s[0].id })) }).catch(() => {})
+    api.subjects().then((all) => { const s = filterSubjects(all); setSubjects(s); if (s[0]) setForm((f) => ({ ...f, subject_id: f.subject_id || s[0].id })) }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -623,7 +641,7 @@ function StepLesson({ onNext }) {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    api.subjects().then((s) => { setSubjects(s); if (s[0]) setForm((f) => ({ ...f, subject_id: f.subject_id || s[0].id })) }).catch(() => {})
+    api.subjects().then((all) => { const s = filterSubjects(all); setSubjects(s); if (s[0]) setForm((f) => ({ ...f, subject_id: f.subject_id || s[0].id })) }).catch(() => {})
   }, [])
   useEffect(() => {
     if (form.subject_id) api.topics(form.subject_id).then(setTopics).catch(() => setTopics([]))
@@ -714,7 +732,7 @@ function StepExam({ onNext }) {
 
   useEffect(() => {
     let alive = true
-    api.subjects().then((s) => { if (alive) { setSubjects(s); if (s[0]) setFilter((f) => ({ ...f, subject_id: f.subject_id || s[0].id })) } }).catch(() => {})
+    api.subjects().then((all) => { if (alive) { const s = filterSubjects(all); setSubjects(s); if (s[0]) setFilter((f) => ({ ...f, subject_id: f.subject_id || s[0].id })) } }).catch(() => {})
     api.listExams('shared').then((r) => alive && setShared(r)).catch(() => alive && setShared([]))
     return () => { alive = false }
   }, [])
@@ -763,10 +781,8 @@ function StepExam({ onNext }) {
     setBusy(false)
   }
 
-  // HashRouter: phải kèm #/exam?shared=… mới vào đúng trang Thi thử
-  const shareLink = lastId
-    ? `${window.location.origin}${window.location.pathname}#/exam?shared=${lastId}`
-    : ''
+  const shareLink = lastId ? `${window.location.origin}/exam?shared=${lastId}` : ''
+  const previewLink = lastId ? `/exam?shared=${lastId}&preview=1` : ''
 
   return (
     <>
@@ -816,6 +832,7 @@ function StepExam({ onNext }) {
             <input className="input" style={{ flex: 1, minWidth: 200 }} readOnly value={shareLink} aria-label="Link chia sẻ đề"
               onFocus={(e) => e.target.select()} />
             <button className="btn" onClick={() => { navigator.clipboard?.writeText(shareLink); toast('Đã copy link.') }}>Copy link</button>
+            <Link className="btn primary" to={previewLink}><IconPlay className="icn sm" />Xem trước</Link>
             <button className="btn" onClick={onNext}>Bước 4 — Bài tập →</button>
           </div>
         )}
@@ -878,7 +895,7 @@ function StepAssign({ nav }) {
 
   useEffect(() => {
     Promise.all([
-      api.subjects().catch(() => []),
+        api.subjects().then(filterSubjects).catch(() => []),
       api.classes().catch(() => []),
     ]).then(([s, c]) => {
       setSubjects(s); setClasses(c)
@@ -1018,6 +1035,181 @@ function StepAssign({ nav }) {
       </div>
       <div className="small muted" style={{ marginTop: 8 }}>
         Gợi ý pipeline: <IconPlay className="icn sm" /> nạp câu (bước 1) → bài học (bước 2) → đề thi (bước 3) → hoặc giao bài tập ngay ở đây.
+      </div>
+    </div>
+  )
+}
+
+/* ---------- AI + DOCX pipeline ---------- */
+function StepPipeline({ initialSubject = '' }) {
+  const { toast, errMsg } = useUI()
+  const [subjects, setSubjects] = useState([])
+  const [topics, setTopics] = useState([])
+  const [subjectId, setSubjectId] = useState('')
+  const [topicId, setTopicId] = useState('')
+  const [messages, setMessages] = useState([
+    { role: 'assistant', text: 'Gửi file DOCX (hoặc PDF/TXT) để tôi tách câu hỏi và phân loại: trắc nghiệm, đúng/sai, điền từ, tự luận.' },
+  ])
+  const [file, setFile] = useState(null)
+  const [prompt, setPrompt] = useState('')
+  const [questions, setQuestions] = useState([])
+  const [answers, setAnswers] = useState({})
+  const [busy, setBusy] = useState(false)
+  const fileRef = useRef(null)
+
+  useEffect(() => {
+    api.subjects().then((rows) => {
+      const kept = filterSubjects(rows)
+      setSubjects(kept)
+      const chosen = kept.find((s) => s.id === initialSubject) || kept[0]
+      if (chosen) setSubjectId(chosen.id)
+    }).catch(() => {})
+  }, [initialSubject])
+
+  useEffect(() => {
+    if (!subjectId) { setTopics([]); return }
+    api.topics(subjectId).then((rows) => setTopics(Array.isArray(rows) ? rows : [])).catch(() => setTopics([]))
+  }, [subjectId])
+
+  const counts = questions.reduce((acc, q) => {
+    acc[q.qtype] = (acc[q.qtype] || 0) + 1
+    return acc
+  }, {})
+
+  const run = async () => {
+    if (!file) { toast('Chọn file DOCX/PDF/TXT trước.', 'warn'); return }
+    if (!subjectId) { toast('Chọn môn trước.', 'warn'); return }
+    setBusy(true)
+    setMessages((m) => [...m, { role: 'user', text: `Đã gửi: ${file.name}${prompt ? ` — ${prompt}` : ''}` }])
+    try {
+      const result = await api.uploadImport(file)
+      let raw = []
+      try { raw = await api.parseQuestions(result?.text || '') } catch { raw = [] }
+      if (!raw.length) raw = result?.drafts || []
+      const drafts = raw.map((q, i) => {
+        const opts = Array.isArray(q.options) ? q.options : []
+        const optsLower = opts.map((o) => String(o).trim().toLowerCase())
+        const isTf = optsLower.length === 2 && optsLower.some((o) => o.includes('đúng')) && optsLower.some((o) => o.includes('sai'))
+        let qtype = q.qtype
+        if (!['trac_nghiem', 'dung_sai', 'diem_khuyet', 'tu_luan'].includes(qtype)) {
+          if (isTf) qtype = 'dung_sai'
+          else if (opts.length >= 2) qtype = 'trac_nghiem'
+          else if (/___|\{\{[^}]+\}\}/.test(String(q.content || ''))) qtype = 'diem_khuyet'
+          else qtype = 'tu_luan'
+        }
+        let correct = String(q.correct_answer || '').trim()
+        if (qtype === 'dung_sai') {
+          const c = correct.toUpperCase()
+          correct = ['DUNG', 'ĐÚNG', 'TRUE', 'T', 'A'].includes(c) ? 'DUNG' : ['SAI', 'FALSE', 'F', 'B'].includes(c) ? 'SAI' : ''
+        } else if (qtype === 'trac_nghiem') {
+          if (!/^[A-D]$/i.test(correct)) {
+            const idx = opts.findIndex((o) => String(o).trim().toLowerCase() === correct.toLowerCase())
+            if (idx >= 0) correct = 'ABCD'[idx]
+            else if (/^[1-4]$/.test(correct)) correct = 'ABCD'[Number(correct) - 1]
+            else correct = ''
+          } else {
+            correct = correct.toUpperCase()
+          }
+        }
+        return {
+          id: `draft-${Date.now()}-${i}`,
+          subject_id: subjectId,
+          topic_id: topicId || null,
+          grade: 12,
+          difficulty: q.difficulty || 'vận dụng',
+          qtype,
+          content: q.content,
+          options: qtype === 'dung_sai' ? ['Đúng', 'Sai'] : opts,
+          correct_answer: correct,
+          explanation: q.explanation || '',
+          score: 1,
+          source: 'ai',
+        }
+      })
+      setQuestions(drafts)
+      setAnswers({})
+      const summary = Object.entries(drafts.reduce((acc, q) => { acc[q.qtype] = (acc[q.qtype] || 0) + 1; return acc }, {}))
+        .map(([type, n]) => `${n} ${type}`).join(', ')
+      const missing = drafts.filter((q) => q.qtype !== 'tu_luan' && !q.correct_answer).length
+      const answerNote = missing ? ` Còn ${missing} câu thiếu đáp án — bổ sung trước khi đăng đề.` : ' Tất cả câu đều có đáp án để chấm điểm.'
+      setMessages((m) => [...m, { role: 'assistant', text: drafts.length ? `Đã tách ${drafts.length} câu: ${summary}.${answerNote} Xem trước bên phải.` : 'Không tách được câu nào. Kiểm tra lại định dạng file.' }])
+      if (!drafts.length) toast('Không tách được câu hỏi.', 'warn')
+    } catch (e) {
+      setMessages((m) => [...m, { role: 'assistant', text: 'Lỗi đọc file: ' + errMsg(e) }])
+      toast(errMsg(e), 'err')
+    }
+    setBusy(false)
+    setFile(null)
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  const saveBank = async () => {
+    if (!questions.length) return
+    setBusy(true)
+    try {
+      const payload = questions.map(({ id: _id, ...rest }) => rest)
+      const r = await api.bulkQuestions(payload)
+      toast(`Đã lưu ${r.inserted ?? payload.length} câu vào ngân hàng.`)
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBusy(false)
+  }
+
+  const publish = async () => {
+    if (!questions.length) return
+    setBusy(true)
+    try {
+      const ids = []
+      for (const { id: _id, ...q } of questions) {
+        const r = await api.createQuestion(q)
+        if (r?.id) ids.push(r.id)
+      }
+      const exam = await api.createExam({
+        title: prompt || `Đề ${subjects.find((s) => s.id === subjectId)?.name || ''}`,
+        mode: 'shared', duration_min: 45, question_ids: ids,
+      })
+      toast(`Đã đăng đề #${exam.id} (${ids.length} câu).`)
+      setMessages((m) => [...m, { role: 'assistant', text: `Đã đăng đề #${exam.id}. Học sinh vào môn → tab Đề thi để làm.` }])
+    } catch (e) { toast(errMsg(e), 'err') }
+    setBusy(false)
+  }
+
+  return (
+    <div className="pipeline">
+      <div className="pipeline-chat">
+        <div className="chat-log">
+          {messages.map((m, i) => (
+            <div key={i} className={`chat-msg ${m.role}`}>{m.text}</div>
+          ))}
+        </div>
+        <div className="chat-compose">
+          <div className="grid c2">
+            <select className="select" value={subjectId} onChange={(e) => { setSubjectId(e.target.value); setTopicId('') }}>
+              {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <select className="select" value={topicId} onChange={(e) => setTopicId(e.target.value)}>
+              <option value="">Tất cả chuyên đề</option>
+              {topics.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </div>
+          <input className="input" style={{ marginTop: 8 }} placeholder="Ghi chú cho AI (không bắt buộc)…" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+          <input ref={fileRef} className="input" style={{ marginTop: 8 }} type="file" accept=".docx,.pdf,.txt" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn primary" onClick={run} disabled={busy}><IconWand className="icn sm" />{busy ? 'Đang xử lý…' : 'Gửi cho AI'}</button>
+            {questions.length > 0 && <button className="btn" onClick={saveBank} disabled={busy}>Lưu ngân hàng</button>}
+            {questions.length > 0 && <button className="btn" onClick={publish} disabled={busy}>Đăng đề thi</button>}
+          </div>
+        </div>
+      </div>
+      <div className="pipeline-preview">
+        <div className="row spread" style={{ marginBottom: 8 }}>
+          <b>Xem trước đề</b>
+          <span className="badge">{questions.length} câu{counts.trac_nghiem ? ` · ${counts.trac_nghiem} TN` : ''}{counts.dung_sai ? ` · ${counts.dung_sai} Đ/S` : ''}{counts.diem_khuyet ? ` · ${counts.diem_khuyet} điền từ` : ''}{counts.tu_luan ? ` · ${counts.tu_luan} tự luận` : ''}</span>
+        </div>
+        {questions.length === 0 ? (
+          <div className="empty">Gửi file để xem trước đề tại đây — hiển thị giống môi trường thi của học sinh.</div>
+        ) : (
+          <ExamPaper questions={questions} answers={answers} setAnswers={setAnswers} interactive />
+        )}
       </div>
     </div>
   )

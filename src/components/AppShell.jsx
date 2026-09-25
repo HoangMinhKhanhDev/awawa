@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import { IconChevronRight, IconMoon, IconSprout, IconSun, IconX } from './icons.jsx'
 import { useSession } from '../app/session-context.jsx'
 import { useSchoolScope } from '../app/school-context.jsx'
@@ -46,7 +46,6 @@ function MoreSheet({ items, closeRef, onClose }) {
             <IconX className="icn sm" />
           </button>
         </div>
-        <ContextSwitcher />
         <nav className="more-list" aria-label="Các chức năng khác">
           {items.map((item) => {
             const Icon = item.icon
@@ -66,51 +65,6 @@ function MoreSheet({ items, closeRef, onClose }) {
           })}
         </nav>
       </div>
-    </div>
-  )
-}
-
-function ContextSwitcher({ compact = false }) {
-  const { status, schools, school, team, error, selectSchool, selectTeam, refresh } = useSchoolScope()
-  const navigate = useNavigate()
-  const location = useLocation()
-  const workspaceLocation = location.pathname === '/workspace' || location.pathname.startsWith('/schools/')
-  const changeSchool = (event) => {
-    const nextSchool = schools.find((item) => Number(item.id) === Number(event.target.value))
-    selectSchool(event.target.value)
-    if (workspaceLocation && nextSchool?.teams?.[0]) navigate(`/schools/${encodeURIComponent(nextSchool.slug)}/teams/${encodeURIComponent(nextSchool.teams[0].slug)}`)
-  }
-  const changeTeam = (event) => {
-    const nextTeam = school?.teams?.find((item) => Number(item.id) === Number(event.target.value))
-    selectTeam(event.target.value)
-    if (workspaceLocation && nextTeam && school) navigate(`/schools/${encodeURIComponent(school.slug)}/teams/${encodeURIComponent(nextTeam.slug)}`)
-  }
-  if (status === 'anonymous' || status === 'legacy') return null
-  if (status === 'loading') return <div className={`context-switcher${compact ? ' compact' : ''}`}><span className="skeleton-line" /></div>
-  if (status === 'error') {
-    return (
-      <div className={`context-switcher error${compact ? ' compact' : ''}`}>
-        <span title={error}>Chưa tải được phạm vi</span>
-        <button className="btn ghost sm" onClick={refresh}>Thử lại</button>
-      </div>
-    )
-  }
-  if (!school) return <div className={`context-switcher${compact ? ' compact' : ''}`}>Chưa thuộc trường</div>
-  return (
-    <div className={`context-switcher${compact ? ' compact' : ''}`}>
-      <label>
-        <span>Trường</span>
-        <select className="select" value={school.id} onChange={changeSchool}>
-          {schools.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </select>
-      </label>
-      <label>
-        <span>Đội tuyển</span>
-        <select className="select" value={team?.id || ''} disabled={!school.teams?.length} onChange={changeTeam}>
-          {!school.teams?.length && <option value="">Chưa có đội</option>}
-          {school.teams?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </select>
-      </label>
     </div>
   )
 }
@@ -170,7 +124,6 @@ export default function AppShell({ session: sessionProp, theme, onThemeToggle, c
     <div className="layout">
       <aside className="sidebar" aria-label="Điều hướng chính">
         <div className="brand"><IconSprout className="icn lg" /><span>Ôn luyện HSG<small>Lớp bồi dưỡng HSG</small></span></div>
-        <ContextSwitcher />
         <nav aria-label="Điều hướng chính" style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {desktopPrimary.map((item) => {
             const Icon = item.icon
@@ -195,7 +148,6 @@ export default function AppShell({ session: sessionProp, theme, onThemeToggle, c
       <header className="topbar">
         <b><IconSprout className="icn sm" />Ôn luyện HSG</b>
         <span className="row">
-          <ContextSwitcher compact />
           <NotificationsBell />
           <button className="theme-toggle" aria-label={themeLabel} title={dark ? 'Chế độ sáng' : 'Chế độ tối'} onClick={onThemeToggle}>
             {dark ? <IconSun className="icn sm" /> : <IconMoon className="icn sm" />}

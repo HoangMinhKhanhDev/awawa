@@ -1,12 +1,12 @@
 import {
-  IconBook, IconCap, IconChart, IconFileUp, IconHome, IconPen, IconSchool,
+  IconCap, IconChart, IconFileUp, IconHome, IconPen, IconSchool,
   IconShield, IconTask, IconTable, IconTimer, IconUser, IconUsers, IconWand,
 } from '../components/icons.jsx'
 import Home from '../pages/Home.jsx'
 import Login from '../pages/Login.jsx'
 import Topics from '../pages/Topics.jsx'
 import Assignments from '../pages/Assignments.jsx'
-import Results from '../pages/Results.jsx'
+import Info from '../pages/Info.jsx'
 import Grading from '../pages/Grading.jsx'
 import Profile from '../pages/Profile.jsx'
 import Practice from '../pages/Practice.jsx'
@@ -109,16 +109,7 @@ export const routeRegistry = [
     path: '/topics',
     component: Topics,
     audience: audienceValues.all,
-    navigation: {
-      desktop: [
-        nav('Học tập', 'Chuyên đề', IconBook, audienceValues.student, 'primary', 20),
-        nav('Chuyên đề', 'Chuyên đề', IconBook, audienceValues.staff, 'primary', 40),
-      ],
-      mobile: [
-        nav('Học tập', 'Chuyên đề', IconBook, audienceValues.student, 'primary', 20),
-        nav('Chuyên đề', 'Chuyên đề', IconBook, audienceValues.staff, 'more', 20),
-      ],
-    },
+    navigation: {},
   },
   {
     id: 'topics-detail',
@@ -151,17 +142,17 @@ export const routeRegistry = [
     navigation: {},
   },
   {
-    id: 'results',
-    path: '/results',
-    component: Results,
+    id: 'info',
+    path: '/info',
+    component: Info,
     audience: audienceValues.all,
     navigation: {
       desktop: [
-        nav('Kết quả', 'Kết quả', IconChart, audienceValues.student, 'primary', 40),
+        nav('Thông tin', 'Thông tin', IconChart, audienceValues.student, 'primary', 40),
       ],
       mobile: [
-        nav('Kết quả', 'Kết quả', IconChart, audienceValues.student, 'primary', 40),
-        nav('Kết quả', 'Kết quả', IconChart, audienceValues.staff, 'more', 40),
+        nav('Thông tin', 'Thông tin', IconChart, audienceValues.student, 'primary', 40),
+        nav('Thông tin', 'Thông tin', IconChart, audienceValues.staff, 'more', 40),
       ],
     },
   },

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 import { IconFileUp, IconPlus, IconUpload } from '../components/icons.jsx'
+import { filterSubjects } from '../lib/subjects.js'
 
 export default function ImportDoc() {
   const { toast, errMsg } = useUI()
@@ -15,7 +16,7 @@ export default function ImportDoc() {
   const [busy, setBusy] = useState(false)
   const [savedN, setSavedN] = useState(0)
 
-  useEffect(() => { api.subjects().then((s) => { setSubjects(s); if (s[0]) setSubjectId(s[0].id) }).catch(() => {}) }, [])
+  useEffect(() => { api.subjects().then((all) => { const s = filterSubjects(all); setSubjects(s); if (s[0]) setSubjectId(s[0].id) }).catch(() => {}) }, [])
 
   const onFile = async (e) => {
     const f = e.target.files?.[0]

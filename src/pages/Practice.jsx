@@ -4,6 +4,7 @@ import { IconPlay, IconTimer, IconAward } from '../components/icons.jsx'
 import { ClozeText } from '../components/ClozeText.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
+import { filterSubjects } from '../lib/subjects.js'
 
 const optsOf = (q) => { try { const p = JSON.parse(q.options || '[]'); return Array.isArray(p) ? p : [] } catch { return [] } }
 
@@ -21,7 +22,7 @@ export default function Practice() {
   const [busy, setBusy] = useState(false)
   const [finishing, setFinishing] = useState(false)
 
-  useEffect(() => { api.subjects().then((s) => { setSubjects(s); if (s[0]) setCfg((c) => ({ ...c, subject_id: c.subject_id || s[0].id })) }).catch(() => {}) }, [])
+  useEffect(() => { api.subjects().then((all) => { const s = filterSubjects(all); setSubjects(s); if (s[0]) setCfg((c) => ({ ...c, subject_id: c.subject_id || s[0].id })) }).catch(() => {}) }, [])
   useEffect(() => { if (cfg.subject_id) api.topics(cfg.subject_id).then(setTopics).catch(() => {}) }, [cfg.subject_id])
   useEffect(() => { api.stats().then((s) => setWeak(s?.weak_topics || [])).catch(() => {}) }, [])
   const me = getSession().student

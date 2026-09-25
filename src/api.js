@@ -275,7 +275,7 @@ export const api = {
   deleteQuestion: (id) => preq(`/questions/${id}`, { method: 'DELETE' }),
   createExam: (payload) => preq('/exams', { method: 'POST', body: JSON.stringify(payload) }),
   listExams: (mode = 'shared') => preq(`/exams${pquery({ mode: mode || 'shared' })}`),
-  getExam: (id) => preq(`/exams/${id}`),
+  getExam: (id, preview = false) => preq(`/exams/${id}${preview ? '?preview=1' : ''}`),
   submitExam: (id, payload) => preq(`/exams/${id}/submit`, { method: 'POST', body: JSON.stringify(payload) }),
   attempts: (params = {}) => preq(`/attempts${pquery(params)}`),
   stats: (params = {}) => preq(`/stats/overview${pquery(params)}`),
@@ -284,6 +284,7 @@ export const api = {
   updateStudent: (id, payload) => preq(`/students/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteStudent: (id) => preq(`/students/${id}`, { method: 'DELETE' }),
   leaderboard: (params = {}) => preq(`/stats/leaderboard${pquery(params)}`),
+  mySubjects: () => preq('/me/subjects'),
   ...mvpMethods(preq, pquery),
   ...schoolMethods(preq, pquery),
 
@@ -355,6 +356,8 @@ export const api = {
     return r.url
   },
   bulkQuestions: (items) => preq('/questions/bulk', { method: 'POST', body: JSON.stringify({ items }) }),
+  aiGenerate: (payload) => preq('/ai/generate', { method: 'POST', body: JSON.stringify(payload) }),
+  parseQuestions: (text) => preq('/ai/generate', { method: 'POST', body: JSON.stringify({ type: 'parse', text }) }).then((r) => (Array.isArray(r?.data?.questions) ? r.data.questions : [])),
   aiGenerateStream: (payload, onEvent, signal) => aiStream('/ai/generate-stream', payload, onEvent, signal),
 }
 

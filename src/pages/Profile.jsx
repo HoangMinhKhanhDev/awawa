@@ -520,7 +520,7 @@ export default function Profile() {
           <div className="row">
             <Link className="btn primary" to="/topics">Vào chuyên đề</Link>
             <Link className="btn" to="/assignments">Xem bài tập</Link>
-            <Link className="btn" to="/results">Chi tiết kết quả</Link>
+            <Link className="btn" to="/info">Chi tiết kết quả</Link>
           </div>
         </>
       )}

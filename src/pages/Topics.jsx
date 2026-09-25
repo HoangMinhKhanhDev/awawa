@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
-import { IconBook, IconTask, IconClip, IconArrowLeft, IconCheckCircle, IconCircle, IconPlus, IconPencil, IconX, IconFile, IconLayers, IconPlay } from '../components/icons.jsx'
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
+import { IconBook, IconTask, IconClip, IconArrowLeft, IconCheckCircle, IconCircle, IconPlus, IconPencil, IconX, IconFile, IconLayers, IconPlay, IconTimer } from '../components/icons.jsx'
 import { api, getSession } from '../api.js'
 import { useUI } from '../components/ui.jsx'
 import { isStaffRole } from '../lib/roles.js'
+import { filterSubjects } from '../lib/subjects.js'
 
 const TABS = [
   { id: 'lesson', label: 'Bài học', icon: IconBook },
   { id: 'assign', label: 'Bài tập', icon: IconTask },
+  { id: 'exam', label: 'Đề thi', icon: IconTimer },
   { id: 'cards', label: 'Flashcard', icon: IconLayers },
   { id: 'docs', label: 'Tài liệu', icon: IconClip },
 ]
@@ -23,12 +25,13 @@ export default function Topics() {
   const [subjects, setSubjects] = useState([])
   const [detail, setDetail] = useState(null)
   const [assignments, setAssignments] = useState([])
+  const [exams, setExams] = useState([])
   const [tab, setTab] = useState('lesson')
   const nav = useNavigate()
   const rawRole = getSession().student?.role || 'student'
   const teacher = isStaffRole(rawRole)
 
-  useEffect(() => { api.subjects().then(setSubjects).catch(() => {}) }, [])
+  useEffect(() => { api.subjects().then((rows) => setSubjects(filterSubjects(rows))).catch(() => {}) }, [])
 
   const loadDetail = async (sid) => {
     try {
@@ -48,6 +51,7 @@ export default function Topics() {
     if (!subjectId) { setDetail(null); return }
     setTab('lesson')
     loadDetail(subjectId)
+    api.listExams('shared').then((rows) => setExams(Array.isArray(rows) ? rows : [])).catch(() => setExams([]))
     // eslint-disable-next-line
   }, [subjectId])
 
@@ -56,7 +60,7 @@ export default function Topics() {
     return (
       <div className="grid">
         <div className="card">
-          <button className="btn" style={{ marginBottom: 10 }} onClick={() => nav('/topics')}><IconArrowLeft className="icn sm" />Tất cả môn</button>
+          <button className="btn" style={{ marginBottom: 10 }} onClick={() => nav('/')}><IconArrowLeft className="icn sm" />Trang chủ</button>
           <h1 style={{ margin: '0 0 4px' }}>{d?.subject?.name || subjectId}</h1>
           <div className="subnav" style={{ marginTop: 10 }} role="tablist" aria-label="Nội dung môn">
             {TABS.map((t) => {
@@ -97,6 +101,28 @@ export default function Topics() {
           </div>
         )}
 
+        {tab === 'exam' && (
+          <div className="card">
+            <h3>Đề thi của môn này</h3>
+            {exams.length === 0 && <div className="empty">Chưa có đề thi nào.</div>}
+            {exams.map((exam) => (
+              <div key={exam.id} className="board-row">
+                <IconTimer className="icn" style={{ color: 'var(--accent)' }} />
+                <div>
+                  <b>{exam.title}</b>
+                  <div className="small muted">{exam.n_questions ?? 0} câu · {exam.duration_min ?? 0} phút</div>
+                </div>
+                <Link className="btn primary push" to={teacher ? `/exam?shared=${exam.id}&preview=1` : `/exam?shared=${exam.id}`}>{teacher ? 'Xem trước' : 'Làm bài'}</Link>
+              </div>
+            ))}
+            {teacher && (
+              <div className="row" style={{ marginTop: 10 }}>
+                <Link className="btn" to={`/manage/studio?subject=${subjectId}`}><IconPlus className="icn sm" />Tạo đề trong Studio</Link>
+              </div>
+            )}
+          </div>
+        )}
+
         {tab === 'cards' && (
           <FlashcardPanel topics={d?.topics || []} teacher={teacher} />
         )}
@@ -108,23 +134,7 @@ export default function Topics() {
     )
   }
 
-  return (
-    <div className="grid">
-      <div className="card">
-        <h1>Chuyên đề</h1>
-        <div className="small muted">Chọn môn → danh sách chuyên đề → bài học, bài tập, tài liệu.</div>
-      </div>
-      <div className="grid c2">
-        {subjects.map((s) => (
-          <Link key={s.id} className="card" to={`/topics/${s.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-            <h3 className="icon-h" style={{ margin: 0 }}><IconBook className="icn" />{s.name}</h3>
-            <div className="small muted" style={{ marginTop: 4 }}>Mở danh sách chuyên đề →</div>
-          </Link>
-        ))}
-        {subjects.length === 0 && <div className="empty">Đang tải danh sách môn…</div>}
-      </div>
-    </div>
-  )
+  return <Navigate to="/" replace />
 }
 
 /* ---------- Thư viện học liệu (2.4) ---------- */
