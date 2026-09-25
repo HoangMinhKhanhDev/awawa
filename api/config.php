@@ -6,7 +6,7 @@ if (is_file(__DIR__ . '/local.php')) {
     $local = require __DIR__ . '/local.php';
     if (is_array($local)) {
         foreach ($local as $k => $v) {
-            if (getenv($k) === false) putenv("$k=$v");
+            if (is_scalar($v)) putenv($k . '=' . $v);
         }
     }
 }

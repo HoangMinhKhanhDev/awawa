@@ -46,17 +46,23 @@ function phpString(value) {
   return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 }
 
+function envValue(key, fallback = '') {
+  const value = process.env[key];
+  if (!value || /^\*+$/.test(value)) return fallback;
+  return value;
+}
+
 const localConfig = {
-  DB_HOST: process.env.DB_HOST || 'localhost',
-  DB_NAME: process.env.DB_NAME || '',
-  DB_USER: process.env.DB_USER || '',
-  DB_PASS: process.env.DB_PASS || '',
-  API_TOKEN: process.env.API_TOKEN || '',
-  TEACHER_CODE: process.env.TEACHER_CODE || '',
-  AGNES_API_KEY: process.env.AGNES_API_KEY || '',
-  AGNES_BASE_URL: process.env.AGNES_BASE_URL || 'https://apihub.agnes-ai.com/v1',
-  AGNES_DEFAULT_MODEL: process.env.AGNES_DEFAULT_MODEL || 'agnes-2.5-flash',
-  PUBLIC_BASE: process.env.PUBLIC_BASE || '',
+  DB_HOST: envValue('DB_HOST', 'localhost'),
+  DB_NAME: envValue('DB_NAME'),
+  DB_USER: envValue('DB_USER'),
+  DB_PASS: envValue('DB_PASS'),
+  API_TOKEN: envValue('API_TOKEN'),
+  TEACHER_CODE: envValue('TEACHER_CODE'),
+  AGNES_API_KEY: envValue('AGNES_API_KEY'),
+  AGNES_BASE_URL: envValue('AGNES_BASE_URL', 'https://apihub.agnes-ai.com/v1'),
+  AGNES_DEFAULT_MODEL: envValue('AGNES_DEFAULT_MODEL', 'agnes-2.5-flash'),
+  PUBLIC_BASE: envValue('PUBLIC_BASE'),
 };
 const missing = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASS'].filter((key) => !localConfig[key]);
 if (missing.length === 0) {

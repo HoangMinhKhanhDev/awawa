@@ -9,7 +9,10 @@ import { parseTextToDrafts } from './lib/parseImport.js'
 // Chế độ Hostinger (PHP + MySQL): khi có VITE_API_BASE, VD:
 //   VITE_API_BASE=https://herbspalab.com/api
 // Ưu tiên PHP (Hostinger), cuối cùng là Python LAN cũ.
-const PHP_BASE = (import.meta.env.VITE_API_BASE || '').trim().replace(/\/+$/, '')
+const envBaseRaw = (import.meta.env.VITE_API_BASE || '').trim()
+const envBase = /^\*+$/.test(envBaseRaw) ? '' : envBaseRaw.replace(/\/+$/, '')
+const sameOriginApi = import.meta.env.PROD && typeof window !== 'undefined' && window.location.protocol.startsWith('http') && !window.electronAPI ? '/api' : ''
+const PHP_BASE = envBase || sameOriginApi
 export const isPhpMode = Boolean(PHP_BASE)
 
 // ================= LEGACY (Python core) =================
