@@ -113,14 +113,6 @@ function v2_reconcile_class_team_students($teamId)
         } else {
             remove_team_membership_target($teamId, $userId, 'student', 'class');
         }
-        $effective = q_one('SELECT access, status FROM team_memberships WHERE team_id=? AND user_id=? AND role=\'student\'', array($teamId, $userId));
-        $included = $effective && (string) $effective['access'] === 'include' && (string) $effective['status'] === 'active';
-        if ($included) {
-            db()->prepare("UPDATE team_members SET left_at=NULL WHERE team_id=? AND user_id=? AND member_role='student'")->execute(array($teamId, $userId));
-            db()->prepare("INSERT IGNORE INTO team_members (team_id,user_id,member_role,joined_at) VALUES (?,?,'student',NOW())")->execute(array($teamId, $userId));
-        } else {
-            db()->prepare("UPDATE team_members SET left_at=NOW() WHERE team_id=? AND user_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')")->execute(array($teamId, $userId));
-        }
     }
 }
 
@@ -699,17 +691,9 @@ function handle_v2_api($method, $path)
         $membership = q_one("SELECT role FROM school_memberships WHERE school_id=? AND user_id=? AND status='active' AND left_at IS NULL", array((int) $context['school_id'], $userId));
         if (!$membership) jerr('Người dùng không thuộc trường.', 422);
         if ($role === 'coach' && !in_array((string) $membership['role'], array('teacher', 'admin'), true)) jerr('Coach phải là giáo viên hoặc quản trị.', 422);
-        $included = $access === 'include';
         $otherRole = $role === 'coach' ? 'student' : 'coach';
         remove_team_membership_target((int) $context['team_id'], $userId, $otherRole, 'manual');
-        db()->prepare("UPDATE team_members SET left_at=NOW() WHERE team_id=? AND user_id=? AND member_role=? AND (left_at IS NULL OR left_at='')")->execute(array((int) $context['team_id'], $userId, $otherRole));
         sync_team_membership_target((int) $context['team_id'], $userId, $role, true, 'manual', $access, null);
-        if ($included) {
-            db()->prepare("UPDATE team_members SET left_at=NULL WHERE team_id=? AND user_id=? AND member_role=?")->execute(array((int) $context['team_id'], $userId, $role));
-            db()->prepare("INSERT IGNORE INTO team_members (team_id,user_id,member_role,joined_at) VALUES (?,?,?,NOW())")->execute(array((int) $context['team_id'], $userId, $role));
-        } else {
-            db()->prepare("UPDATE team_members SET left_at=NOW() WHERE team_id=? AND user_id=? AND member_role=? AND (left_at IS NULL OR left_at='')")->execute(array((int) $context['team_id'], $userId, $role));
-        }
         policy_audit($me, $context, 'team.membership.override', 'user', (string) $userId, 'allow', '', array('role' => $role, 'access' => $access));
         j(array('ok' => true, 'user_id' => $userId, 'role' => $role, 'access' => $access));
     }

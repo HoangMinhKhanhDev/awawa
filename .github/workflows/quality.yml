@@ -16,7 +16,9 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
-      - run: npm run build:web
+      - run: npm run build:renderer
+      - run: test -f dist/database/migrations/0011_drop_legacy_team_members.php
+      - run: test -f dist/api/index.php
       - run: npm audit --omit=dev
 
   php:

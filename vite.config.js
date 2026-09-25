@@ -39,13 +39,14 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
-    // Cho phép truy cập qua domain ngrok khi test (chỉ dùng thử nghiệm)
     allowedHosts: true,
-    // API đi cùng-origin /api -> 1 tunnel ngrok duy nhất phục vụ cả web + API,
-    // không bị chặn mixed-content khi web chạy https
     proxy: {
-      '/api': { target: 'http://127.0.0.1:8765', changeOrigin: true }
-    }
+      '/api': {
+        target: process.env.VITE_DEV_API_TARGET || 'https://awawa.herbspalab.com',
+        changeOrigin: true,
+        secure: true,
+      },
+    },
   },
   build: {
     outDir: 'dist',

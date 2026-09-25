@@ -49,7 +49,7 @@ require_once dirname(__DIR__, 2) . '/database/lib/Migrator.php';
 $migrator = new Migrator($pdo, dirname(__DIR__, 2) . '/database/migrations');
 $first = $migrator->migrate();
 $second = $migrator->migrate();
-if (count($first) !== 10 || count($second) !== 0) throw new RuntimeException('Migration sequence is not idempotent.');
+if (count($first) !== 11 || count($second) !== 0) throw new RuntimeException('Migration sequence is not idempotent.');
 
 $checks = array(
     'schools' => 1,
@@ -66,6 +66,8 @@ foreach ($checks as $table => $expected) {
     $actual = (int) $pdo->query("SELECT COUNT(*) FROM `$table`")->fetchColumn();
     if ($actual !== $expected) throw new RuntimeException($table . ' expected ' . $expected . ', found ' . $actual . '.');
 }
+$legacyMembers = $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'team_members'")->fetchColumn();
+if ((int) $legacyMembers !== 0) throw new RuntimeException('Legacy team_members table still exists after consolidation.');
 
 $membershipRoles = $pdo->query("SELECT GROUP_CONCAT(`role` ORDER BY `role`) FROM `school_memberships`")->fetchColumn();
 if ($membershipRoles !== 'admin,student,teacher') throw new RuntimeException('School membership roles are invalid: ' . $membershipRoles);

@@ -1,5 +1,5 @@
 <?php
-// API cho MySQL Hostinger — mirror của python-core/main.py (bản rút gọn đủ dùng).
+// API PHP/MySQL cho Hostinger — front controller duy nhất của ứng dụng.
 // Không framework, chạy được trên PHP 7.4+ của shared hosting.
 require __DIR__ . '/config.php';
 
@@ -39,7 +39,6 @@ if (isset($_GET['p']) && $_GET['p'] !== '') {
 if ($path === '' || $path[0] !== '/') $path = '/' . $path;
 
 check_token($path);
-ensure_school_schema();
 
 function q_all($sql, $params = array()) {
     $st = db()->prepare($sql);
@@ -57,9 +56,6 @@ function q_one($sql, $params = array()) {
 require_once __DIR__ . '/lib/policy.php';
 require_once __DIR__ . '/routes_v2.php';
 if (handle_v2_api($method, $path)) exit;
-if (!policy_legacy_route_allowed($path)) {
-    jerr('API v1 đã bị khóa trong chế độ đa trường. Hãy dùng API v2.', 410);
-}
 
 function jlist($v) {
     if ($v === null || $v === '') return array();
@@ -789,7 +785,7 @@ if ($path === '/students') {
             $tids = teacher_coached_team_ids((int)$me['id']);
             if (!$tids) j(array());
             $in = implode(',', array_fill(0, count($tids), '?'));
-            $sql .= " JOIN team_members tm ON tm.user_id=s.id AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='') AND tm.team_id IN ($in)";
+            $sql .= " JOIN team_memberships tm ON tm.user_id=s.id AND tm.role='student' AND tm.access='include' AND tm.status='active' AND tm.left_at IS NULL AND tm.team_id IN ($in)";
             $p = array_merge($p, $tids);
         }
         $sql .= ' WHERE 1=1';
@@ -834,8 +830,6 @@ if ($path === '/students') {
         $sid = (int)db()->lastInsertId();
         if ($schoolId > 0) sync_school_membership_target($schoolId, $sid, 'student', true);
         if ($tid) {
-            db()->prepare('INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())')
-                ->execute(array($tid, $sid, 'student'));
             sync_team_membership_target($tid, $sid, 'student', true, 'manual');
         }
         j(array('id' => $sid));
@@ -859,7 +853,6 @@ if (preg_match('#^/students/(\d+)$#', $path, $m)) {
     if ($method === 'DELETE') {
         $me = require_teacher();
         require_same_team_or_admin($me, $sid);
-        db()->prepare('DELETE FROM team_members WHERE user_id=?')->execute(array($sid));
         remove_team_membership_target(null, $sid);
         remove_school_membership_target($sid);
         db()->prepare('DELETE FROM students WHERE id=?')->execute(array($sid));
@@ -927,7 +920,7 @@ if ($path === '/students/bulk' && $method === 'POST') {
         if (!has_perm($me, 'students.delete')) jerr('Bạn không có quyền xóa.', 403);
         foreach ($ids as $sid) {
             if ($sid === (int)$me['id'] || !q_one('SELECT 1 FROM students WHERE id=?', array($sid))) { $skipped[] = $sid; continue; }
-            foreach (array('team_members', 'sessions', 'lesson_completions', 'notifications', 'class_members') as $t) {
+            foreach (array('team_memberships', 'sessions', 'lesson_completions', 'notifications', 'class_members') as $t) {
                 db()->prepare("DELETE FROM `$t` WHERE user_id=?")->execute(array($sid));
             }
             db()->prepare('DELETE FROM students WHERE id=?')->execute(array($sid));
@@ -1071,8 +1064,8 @@ if ($path === '/teams') {
         $me = optional_session();
         $mine = !empty($_GET['mine']);
         $sql = "SELECT t.*, y.name year_name, g.name grade_name, s.name subject_name,
-            (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id=t.id AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='')) student_count,
-            (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id=t.id AND tm.member_role='coach' AND (tm.left_at IS NULL OR tm.left_at='')) coach_count
+            (SELECT COUNT(*) FROM team_memberships tm WHERE tm.team_id=t.id AND tm.role='student' AND tm.access='include' AND tm.status='active' AND tm.left_at IS NULL) student_count,
+            (SELECT COUNT(*) FROM team_memberships tm WHERE tm.team_id=t.id AND tm.role='coach' AND tm.access='include' AND tm.status='active' AND tm.left_at IS NULL) coach_count
             FROM teams t
             LEFT JOIN school_years y ON y.id=t.school_year_id
             LEFT JOIN grades g ON g.id=t.grade_id
@@ -1126,7 +1119,6 @@ if (preg_match('#^/teams/(\d+)$#', $path, $m)) {
     }
     if ($method === 'DELETE') {
         require_admin();
-        db()->prepare('DELETE FROM team_members WHERE team_id=?')->execute(array($tid));
         remove_team_membership_target($tid);
         db()->prepare('DELETE FROM teams WHERE id=?')->execute(array($tid));
         j(array('ok' => true));
@@ -1138,10 +1130,10 @@ if (preg_match('#^/teams/(\d+)/members$#', $path, $m)) {
     if ($method === 'GET') {
         require_teacher();
         j(q_all(
-            "SELECT tm.id mid, tm.user_id, tm.member_role, tm.joined_at, tm.left_at,
+            "SELECT tm.id mid, tm.user_id, tm.role member_role, tm.access, tm.status, tm.source, tm.joined_at, tm.left_at,
                     s.name, s.class_name, s.phone, s.email, s.role, s.active
-             FROM team_members tm JOIN students s ON s.id=tm.user_id
-             WHERE tm.team_id=? ORDER BY tm.member_role DESC, s.name",
+             FROM team_memberships tm JOIN students s ON s.id=tm.user_id
+             WHERE tm.team_id=? ORDER BY tm.role DESC, s.name",
             array($tid)
         ));
     }
@@ -1158,10 +1150,6 @@ if (preg_match('#^/teams/(\d+)/members$#', $path, $m)) {
             if (!in_array($tid, $mine, true)) jerr('Bạn không phụ trách đội này.', 403);
             if ($role === 'coach') jerr('Chỉ admin được phân công coach.', 403);
         }
-        db()->prepare("UPDATE team_members SET left_at=NULL WHERE team_id=? AND user_id=? AND member_role=?")
-            ->execute(array($tid, $uid, $role));
-        db()->prepare("INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())")
-            ->execute(array($tid, $uid, $role));
         sync_team_membership_target($tid, $uid, $role, true, 'manual');
         if ($role === 'student') {
             $t = q_one('SELECT name FROM teams WHERE id=?', array($tid));
@@ -1180,8 +1168,6 @@ if (preg_match('#^/teams/(\d+)/members/(\d+)$#', $path, $m)) {
             $mine = teacher_coached_team_ids((int)$me['id']);
             if (!in_array($tid, $mine, true)) jerr('Bạn không phụ trách đội này.', 403);
         }
-        db()->prepare("UPDATE team_members SET left_at=NOW() WHERE team_id=? AND user_id=? AND left_at IS NULL")
-            ->execute(array($tid, $uid));
         remove_team_membership_target($tid, $uid);
         j(array('ok' => true));
     }
@@ -1193,14 +1179,14 @@ if ($path === '/me/teams') {
     if (!$me) j(array());
     if (is_admin($me)) {
         j(q_all("SELECT t.*,
-            (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id=t.id AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='')) student_count
+            (SELECT COUNT(*) FROM team_memberships tm WHERE tm.team_id=t.id AND tm.role='student' AND tm.access='include' AND tm.status='active' AND tm.left_at IS NULL) student_count
             FROM teams t ORDER BY t.name"));
     }
     $tids = teacher_coached_team_ids((int)$me['id']);
     if (!$tids) j(array());
     $in = implode(',', array_fill(0, count($tids), '?'));
     j(q_all("SELECT t.*,
-        (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id=t.id AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='')) student_count
+        (SELECT COUNT(*) FROM team_memberships tm WHERE tm.team_id=t.id AND tm.role='student' AND tm.access='include' AND tm.status='active' AND tm.left_at IS NULL) student_count
         FROM teams t WHERE t.id IN ($in) ORDER BY t.name", $tids));
 }
 
@@ -1442,9 +1428,6 @@ if ($path === '/classes' && $method === 'POST') {
     if ($schoolId <= 0) jerr('Tài khoản chưa được gán vào trường.', 409);
     db()->prepare('INSERT INTO teams (name, join_code, school_id) VALUES (?,?,?)')->execute(array($name, $code, $schoolId));
     $tid = (int)db()->lastInsertId();
-    // Creator la coach cua team
-    db()->prepare("INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())")
-        ->execute(array($tid, $me['id'], 'coach'));
     sync_team_membership_target($tid, $me['id'], 'coach', true, 'manual');
     j(array('id' => $tid, 'name' => $name, 'join_code' => $code));
 }
@@ -1460,8 +1443,6 @@ if ($path === '/classes/join' && $method === 'POST') {
     $teamSchoolId = (int)($cl['school_id'] ?? 0);
     $studentSchoolId = (int)($me['school_id'] ?? 0);
     if ($teamSchoolId > 0 && $studentSchoolId > 0 && $teamSchoolId !== $studentSchoolId) jerr('Mã lớp không thuộc trường của bạn.', 403);
-    db()->prepare("INSERT IGNORE INTO team_members (team_id, user_id, member_role, joined_at) VALUES (?,?,?,NOW())")
-        ->execute(array($cl['id'], $me['id'], 'student'));
     sync_team_membership_target($cl['id'], $me['id'], 'student', true, 'invite');
     if ($teamSchoolId > 0) sync_school_membership_target($teamSchoolId, $me['id'], 'student', true);
     if ($teamSchoolId > 0 && $studentSchoolId <= 0) {
@@ -1478,7 +1459,7 @@ if (preg_match('#^/classes/(\d+)/members$#', $path, $m)) {
     if (!is_role_teacher($me)) jerr('Khu vực giáo viên.', 403);
     $cid = (int)$m[1];
     j(array_map(function ($r) { unset($r['password_hash']); return $r; },
-        q_all("SELECT s.id, s.name, s.class_name, s.role, tm.joined_at FROM team_members tm JOIN students s ON s.id=tm.user_id WHERE tm.team_id=? AND tm.member_role='student' AND (tm.left_at IS NULL OR tm.left_at='') ORDER BY s.name", array($cid))));
+        q_all("SELECT s.id, s.name, s.class_name, s.role, tm.joined_at FROM team_memberships tm JOIN students s ON s.id=tm.user_id WHERE tm.team_id=? AND tm.role='student' AND tm.access='include' AND tm.status='active' AND tm.left_at IS NULL ORDER BY s.name", array($cid))));
 }
 
 // Team id cho assignment: nhan team_id hoac class_id (legacy), kie' m tra GV phai coach/admin
@@ -1674,9 +1655,9 @@ if (preg_match('#^/assignments/(\d+)/submissions$#', $path, $m)) {
     if (!$a) jerr('Không tìm thấy bài tập.', 404);
     require_team_coach_or_admin($me, (int)$a['team_id']);
     $rows = q_all('SELECT s.id sid, s.name, s.class_name, sub.id sub_id, sub.answer, sub.score, sub.feedback, sub.submitted_at, sub.graded_at, sub.question_scores, sub.files
-        FROM team_members tm JOIN students s ON s.id=tm.user_id
+        FROM team_memberships tm JOIN students s ON s.id=tm.user_id
         LEFT JOIN submissions sub ON sub.assignment_id=? AND sub.student_id=s.id
-        WHERE tm.team_id=? AND tm.member_role=\'student\' AND (tm.left_at IS NULL OR tm.left_at=\'\') ORDER BY s.name', array($aid, $a['team_id']));
+        WHERE tm.team_id=? AND tm.role=\'student\' AND tm.access=\'include\' AND tm.status=\'active\' AND tm.left_at IS NULL ORDER BY s.name', array($aid, $a['team_id']));
     $qs = q_all('SELECT idx, content, answer, points, question_id FROM assign_questions WHERE assignment_id=? ORDER BY idx', array($aid));
     $out = array();
     foreach ($rows as $r) {
@@ -2080,7 +2061,7 @@ if ($path === '/stats/class-overview' && $method === 'GET') {
 
     // Bai gan day + so da nop/chua nop (join teams)
     $recent = q_all('SELECT a.id, a.title, a.deadline, a.topic_id, tt.name class_name, t.name topic_name,
-        (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id=a.team_id AND tm.member_role=\'student\' AND (tm.left_at IS NULL OR tm.left_at=\'\')) total,
+        (SELECT COUNT(*) FROM team_memberships tm WHERE tm.team_id=a.team_id AND tm.role=\'student\' AND tm.access=\'include\' AND tm.status=\'active\' AND tm.left_at IS NULL) total,
         (SELECT COUNT(*) FROM submissions s WHERE s.assignment_id=a.id AND s.submitted_at IS NOT NULL) submitted
         FROM assignments a JOIN teams tt ON tt.id=a.team_id LEFT JOIN topics t ON t.id=a.topic_id
         ORDER BY a.created_at DESC LIMIT 5');
@@ -2094,7 +2075,7 @@ if ($path === '/stats/class-overview' && $method === 'GET') {
         GROUP BY t.id, t.name, a.team_id ORDER BY t.name');
     $topicProgress = array();
     foreach ($tpRows as $t) {
-        $members = (int)q_one("SELECT COUNT(*) c FROM team_members WHERE team_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')", array($t['team_id']))['c'];
+        $members = (int)q_one("SELECT COUNT(*) c FROM team_memberships WHERE team_id=? AND role='student' AND access='include' AND status='active' AND left_at IS NULL", array($t['team_id']))['c'];
         $expected = max(1, (int)$t['an'] * $members);
         // done = tong da nop tren cac bai cua CD nay (tinh lai chinh xac)
         $done = (int)q_one('SELECT COUNT(*) c FROM submissions s JOIN assignments a2 ON a2.id=s.assignment_id WHERE a2.topic_id=? AND s.submitted_at IS NOT NULL', array($t['tid']))['c'];
@@ -2172,7 +2153,7 @@ if ($path === '/notifications/read' && $method === 'POST') {
 }
 
 function notify_class($team_id, $title, $bodyTxt, $link) {
-    $members = q_all("SELECT user_id FROM team_members WHERE team_id=? AND member_role='student' AND (left_at IS NULL OR left_at='')", array($team_id));
+    $members = q_all("SELECT user_id FROM team_memberships WHERE team_id=? AND role='student' AND access='include' AND status='active' AND left_at IS NULL", array($team_id));
     $st = db()->prepare('INSERT INTO notifications (user_id, title, body, link) VALUES (?,?,?,?)');
     foreach ($members as $m) {
         $st->execute(array($m['user_id'], mb_substr($title, 0, 255), mb_substr($bodyTxt, 0, 1000), mb_substr($link, 0, 500)));

@@ -10,31 +10,6 @@ function policy_table_exists($table)
     }
 }
 
-function policy_legacy_route_allowed($path)
-{
-    if (getenv('AWAWA_MIGRATIONS_REQUIRED') !== '1') return true;
-    if (getenv('AWAWA_STRICT_TENANT') === '0') return true;
-    $allowed = array(
-        '/health',
-        '/auth/register',
-        '/auth/login',
-        '/auth/logout',
-        '/auth/me',
-        '/auth/profile',
-        '/auth/password',
-        '/auth/forgot-password',
-        '/auth/reset-password',
-        '/permissions',
-        '/migrate',
-        '/files/',
-        '/me/avatar',
-    );
-    foreach ($allowed as $prefix) {
-        if ($prefix === $path || strpos($path, $prefix) === 0) return true;
-    }
-    return false;
-}
-
 function policy_require_schema()
 {
     $required = array(
@@ -57,9 +32,9 @@ function policy_require_schema()
             j(array('error' => 'Cơ sở dữ liệu chưa chạy migration bắt buộc.', 'code' => 'migration_required', 'table' => $table), 503);
         }
     }
-    $applied = (int) q_one("SELECT COUNT(*) AS total FROM `schema_migrations` WHERE `status` = 'completed' AND `version` IN ('0001_legacy_contract','0002_school_memberships','0003_legacy_parity','0004_class_team_links','0005_team_memberships','0006_module_catalog','0007_audit_break_glass','0008_tenant_scope_columns','0009_team_operations','0010_permission_catalog')")['total'];
-    if ($applied !== 10) {
-        j(array('error' => 'API v2 yêu cầu migration 0001–0010 hoàn tất.', 'code' => 'migration_required', 'applied' => $applied), 503);
+    $applied = (int) q_one("SELECT COUNT(*) AS total FROM `schema_migrations` WHERE `status` = 'completed' AND `version` IN ('0001_legacy_contract','0002_school_memberships','0003_legacy_parity','0004_class_team_links','0005_team_memberships','0006_module_catalog','0007_audit_break_glass','0008_tenant_scope_columns','0009_team_operations','0010_permission_catalog','0011_drop_legacy_team_members')")['total'];
+    if ($applied !== 11) {
+        j(array('error' => 'API yêu cầu migration 0001–0011 hoàn tất.', 'code' => 'migration_required', 'applied' => $applied), 503);
     }
 }
 

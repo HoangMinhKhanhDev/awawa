@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { api, isPhpMode } from '../api.js'
+import { api } from '../api.js'
 import { useSession } from './session-context.jsx'
 
 const SchoolContext = createContext(null)
@@ -30,15 +30,11 @@ function selectFromSchools(schools, schoolId, teamId) {
 
 export function SchoolProvider({ children }) {
   const { token } = useSession()
-  const [snapshot, setSnapshot] = useState({ status: isPhpMode ? 'loading' : 'legacy', schools: [], error: '' })
+  const [snapshot, setSnapshot] = useState({ status: 'loading', schools: [], error: '' })
 
   const load = useCallback(async () => {
     if (!token) {
       setSnapshot({ status: 'anonymous', schools: [], error: '' })
-      return
-    }
-    if (!isPhpMode) {
-      setSnapshot({ status: 'legacy', schools: [], error: '' })
       return
     }
     setSnapshot((current) => ({ ...current, status: 'loading', error: '' }))
@@ -116,7 +112,7 @@ export function useSchoolScope() {
   const context = useContext(SchoolContext)
   if (context) return context
   return {
-    status: isPhpMode ? 'loading' : 'legacy',
+    status: 'loading',
     schools: [],
     school: null,
     team: null,
