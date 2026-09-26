@@ -31,7 +31,7 @@ function notify(m) { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 
   notify('notifications/initialized');
   if (process.argv[2].startsWith('@')) {
     const fs = require('fs');
-    const payload = JSON.parse(fs.readFileSync(process.argv[2].slice(1), 'utf8'));
+    const payload = JSON.parse(fs.readFileSync(process.argv[2].slice(1), 'utf8').replace(/^\uFEFF/, ''));
     const res = await send('tools/call', { name: payload.tool, arguments: payload.args });
     console.log(JSON.stringify(res).slice(0, LIMIT));
     child.kill();
