@@ -47,6 +47,14 @@ if (!hash_equals($key,(string)($_GET['key']??''))) { http_response_code(403); ex
 header('Content-Type: application/json; charset=utf-8');
 @set_time_limit(600);
 $root=__DIR__.'/..';
+// Zip khong ghi de duoc file da xoa khoi repo, nen phai don tay.
+$stale=glob($root.'/app/Console/Commands/*.php') ?: array();
+$removed=array();
+foreach ($stale as $f) {
+  $name=basename($f);
+  if (in_array($name, array('GenerateArtifactCommand.php','GenerateVapidKeys.php','SendDueReminders.php'), true)) continue;
+  if (@unlink($f)) $removed[]=$name;
+}
 foreach (glob($root.'/bootstrap/cache/*.php') as $x) @unlink($x);
 require $root.'/vendor/autoload.php';
 try {
@@ -58,7 +66,7 @@ try {
   $s['optimize']=$kernel->call('optimize');
   $s['migrations']=Illuminate\\Support\\Facades\\DB::table('migrations')->count();
   @unlink(__FILE__);
-  echo json_encode(array('ok'=>true,'steps'=>$s));
+  echo json_encode(array('ok'=>true,'steps'=>$s,'removed'=>$removed));
 } catch (Throwable $e) { http_response_code(500); echo json_encode(array('error'=>get_class($e).': '.$e->getMessage())); }
 `);
 
