@@ -47,13 +47,13 @@ if (!hash_equals($key,(string)($_GET['key']??''))) { http_response_code(403); ex
 header('Content-Type: application/json; charset=utf-8');
 @set_time_limit(600);
 $root=__DIR__.'/..';
-// Zip khong ghi de duoc file da xoa khoi repo, nen phai don tay.
-$stale=glob($root.'/app/Console/Commands/*.php') ?: array();
+// Zip khong ghi de duoc file da xoa khoi repo, nen phai don tay. Chi danh sach
+// khai bao duoi day moi duoc xoa - tu do suy ra danh sach se xoa nham file con
+// dang dung.
 $removed=array();
-foreach ($stale as $f) {
-  $name=basename($f);
-  if (in_array($name, array('GenerateArtifactCommand.php','GenerateVapidKeys.php','SendDueReminders.php'), true)) continue;
-  if (@unlink($f)) $removed[]=$name;
+foreach (array('app/Console/Commands/GeneratePendingArtifact.php') as $rel) {
+  $f=$root.'/'.$rel;
+  if (is_file($f) && @unlink($f)) $removed[]=$rel;
 }
 foreach (glob($root.'/bootstrap/cache/*.php') as $x) @unlink($x);
 require $root.'/vendor/autoload.php';
