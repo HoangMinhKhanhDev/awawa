@@ -8,11 +8,34 @@ const username = process.env.HOSTINGER_USERNAME || 'u670570555';
 const domain = process.env.HOSTINGER_DOMAIN || 'awawa.herbspalab.com';
 
 function getUrl() {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const payload = path.join(os.tmpdir(), 'hostinger-payload.json');
+  fs.writeFileSync(
+    payload,
+    JSON.stringify({
+      tool: 'execute',
+      args: {
+        operation: 'hosting_files_generate-upload-url',
+        params: { username, domain },
+      },
+    }),
+    'utf8',
+  );
   for (let i = 0; i < 4; i++) {
     try {
       const out = execSync(
-        `node scripts/hostinger-call.cjs hosting_generateUploadURLV1 username=${username},domain=${domain}`,
-        { encoding: 'utf8', env: { ...process.env, HOSTINGER_CALL_LIMIT: '1000000' } },
+        `node scripts/hostinger-call.cjs "@${payload}"`,
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            HOSTINGER_CALL_LIMIT: '1000000',
+            HOSTINGER_USERNAME: username,
+            HOSTINGER_DOMAIN: domain,
+          },
+        },
       );
       const text = JSON.parse(out).result.content[0].text;
       return JSON.parse(text);

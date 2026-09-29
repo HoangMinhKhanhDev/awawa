@@ -1,7 +1,13 @@
 // Gọi tool Hostinger MCP bất kỳ: node scripts/hostinger-call.cjs <tool> '<json>'
 const { spawn } = require('child_process');
 const LIMIT = Number.parseInt(process.env.HOSTINGER_CALL_LIMIT || '6000', 10);
-const child = spawn('npx -y @hostinger/mcp', [], { stdio: ['pipe', 'pipe', 'ignore'], shell: true });
+// @hostinger/mcp bắt buộc có 2 biến môi trường này, không truyền tham số tool vào được.
+const MCP_ENV = {
+  ...process.env,
+  HOSTINGER_USERNAME: process.env.HOSTINGER_USERNAME || 'u670570555',
+  HOSTINGER_DOMAIN: process.env.HOSTINGER_DOMAIN || 'awawa.herbspalab.com',
+};
+const child = spawn('npx -y @hostinger/mcp', [], { stdio: ['pipe', 'pipe', 'ignore'], shell: true, env: MCP_ENV });
 let buf = '';
 let id = 0;
 const pending = new Map();
@@ -15,7 +21,7 @@ child.stdout.on('data', (d) => {
     try {
       const msg = JSON.parse(line);
       if (msg.id !== undefined && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
-    } catch (e) {}
+    } catch {}
   }
 });
 function send(method, params) {
